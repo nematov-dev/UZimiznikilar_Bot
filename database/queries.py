@@ -171,6 +171,17 @@ async def log_message(group_id: int, user_id: int, message_id: int,
     return row["id"]
 
 
+async def get_user_message_ids(group_id: int, user_id: int) -> list[int]:
+    """Foydalanuvchining guruhda yozgan barcha xabar ID larini qaytaradi."""
+    pool = await get_pool()
+    rows = await pool.fetch("""
+        SELECT message_id FROM messages
+        WHERE group_id = $1 AND user_id = $2 AND was_deleted = FALSE
+        ORDER BY id DESC
+    """, group_id, user_id)
+    return [r["message_id"] for r in rows]
+
+
 async def mark_message_deleted(group_id: int, message_id: int, reason: str):
     pool = await get_pool()
     await pool.execute("""
@@ -195,57 +206,6 @@ async def count_deleted_today() -> int:
         WHERE was_deleted = TRUE AND created_at >= CURRENT_DATE
     """)
     return row["cnt"]
-
-
-# ─────────────────────────── DOCUMENTS ───────────────────────────
-
-async def create_document(title: str, file_id: str, file_name: str,
-                           file_type: str, file_path: str, added_by: int) -> int:
-    pool = await get_pool()
-    row = await pool.fetchrow("""
-        INSERT INTO documents (title, file_id, file_name, file_type, file_path, added_by)
-        VALUES ($1, $2, $3, $4, $5, $6)
-        RETURNING id
-    """, title, file_id, file_name, file_type, file_path, added_by)
-    return row["id"]
-
-
-async def update_document_processed(doc_id: int, chunk_count: int):
-    pool = await get_pool()
-    await pool.execute("""
-        UPDATE documents SET is_processed = TRUE, chunk_count = $2 WHERE id = $1
-    """, doc_id, chunk_count)
-
-
-async def get_all_documents() -> List[asyncpg.Record]:
-    pool = await get_pool()
-    return await pool.fetch("SELECT * FROM documents ORDER BY created_at DESC")
-
-
-async def delete_document(doc_id: int):
-    pool = await get_pool()
-    await pool.execute("DELETE FROM documents WHERE id = $1", doc_id)
-
-
-async def save_chunk(document_id: int, chunk_index: int, chunk_text: str,
-                     embedding: List[float], token_count: int = 0):
-    pool = await get_pool()
-    await pool.execute("""
-        INSERT INTO document_chunks (document_id, chunk_index, chunk_text, embedding, token_count)
-        VALUES ($1, $2, $3, $4::vector, $5)
-    """, document_id, chunk_index, chunk_text, str(embedding), token_count)
-
-
-async def search_chunks(query_embedding: List[float], top_k: int = 5) -> List[asyncpg.Record]:
-    pool = await get_pool()
-    return await pool.fetch("""
-        SELECT dc.chunk_text, dc.chunk_index, d.title, d.file_name,
-               1 - (dc.embedding <=> $1::vector) AS similarity
-        FROM document_chunks dc
-        JOIN documents d ON d.id = dc.document_id
-        ORDER BY dc.embedding <=> $1::vector
-        LIMIT $2
-    """, str(query_embedding), top_k)
 
 
 # ─────────────────────────── ADMIN ACTIONS ───────────────────────────
@@ -475,7 +435,6 @@ async def get_stats_overview() -> dict:
     users = await pool.fetchrow("SELECT COUNT(*) as total, SUM(CASE WHEN is_banned THEN 1 ELSE 0 END) as banned FROM users")
     groups = await pool.fetchrow("SELECT COUNT(*) as total FROM groups WHERE is_active = TRUE")
     msgs = await pool.fetchrow("SELECT COUNT(*) as total, SUM(CASE WHEN was_deleted THEN 1 ELSE 0 END) as deleted FROM messages WHERE created_at >= CURRENT_DATE")
-    docs = await pool.fetchrow("SELECT COUNT(*) as total FROM documents")
     actions = await pool.fetchrow("SELECT COUNT(*) as total FROM admin_actions WHERE created_at >= CURRENT_DATE")
 
     return {
@@ -484,6 +443,5 @@ async def get_stats_overview() -> dict:
         "total_groups": groups["total"],
         "messages_today": msgs["total"],
         "deleted_today": msgs["deleted"],
-        "documents": docs["total"],
         "admin_actions_today": actions["total"],
     }

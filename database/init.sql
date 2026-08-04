@@ -1,5 +1,3 @@
--- pgvector extension
-CREATE EXTENSION IF NOT EXISTS vector;
 CREATE EXTENSION IF NOT EXISTS pg_trgm;
 
 -- ── USERS ────────────────────────────────────────────────────
@@ -8,8 +6,6 @@ DROP TABLE IF EXISTS muted_users CASCADE;
 DROP TABLE IF EXISTS messages CASCADE;
 DROP TABLE IF EXISTS admin_actions CASCADE;
 DROP TABLE IF EXISTS broadcasts CASCADE;
-DROP TABLE IF EXISTS document_chunks CASCADE;
-DROP TABLE IF EXISTS documents CASCADE;
 DROP TABLE IF EXISTS daily_stats CASCADE;
 DROP TABLE IF EXISTS banned_words CASCADE;
 DROP TABLE IF EXISTS bot_settings CASCADE;
@@ -41,7 +37,6 @@ CREATE TABLE groups (
     anti_spam BOOLEAN DEFAULT TRUE,
     anti_links BOOLEAN DEFAULT TRUE,
     anti_profanity BOOLEAN DEFAULT TRUE,
-    ai_enabled BOOLEAN DEFAULT TRUE,
     member_count INTEGER DEFAULT 0,
     created_at TIMESTAMPTZ DEFAULT NOW(),
     updated_at TIMESTAMPTZ DEFAULT NOW()
@@ -94,34 +89,6 @@ CREATE TABLE banned_words (
 );
 CREATE INDEX idx_banned_words_trgm ON banned_words USING gin(word gin_trgm_ops);
 
--- ── DOCUMENTS (RAG) ───────────────────────────────────────────
-CREATE TABLE documents (
-    id BIGSERIAL PRIMARY KEY,
-    title TEXT NOT NULL,
-    file_id TEXT,
-    file_name TEXT,
-    file_type TEXT,
-    file_path TEXT,
-    added_by BIGINT,
-    chunk_count INTEGER DEFAULT 0,
-    is_processed BOOLEAN DEFAULT FALSE,
-    created_at TIMESTAMPTZ DEFAULT NOW()
-);
-
--- ── DOCUMENT CHUNKS (vector store) ───────────────────────────
-CREATE TABLE document_chunks (
-    id BIGSERIAL PRIMARY KEY,
-    document_id BIGINT REFERENCES documents(id) ON DELETE CASCADE,
-    chunk_index INTEGER NOT NULL,
-    chunk_text TEXT NOT NULL,
-    embedding vector(768),
-    token_count INTEGER,
-    created_at TIMESTAMPTZ DEFAULT NOW()
-);
-CREATE INDEX idx_chunks_document_id ON document_chunks(document_id);
-CREATE INDEX idx_chunks_embedding ON document_chunks
-    USING ivfflat (embedding vector_cosine_ops) WITH (lists = 100);
-
 -- ── BROADCASTS ────────────────────────────────────────────────
 CREATE TABLE broadcasts (
     id BIGSERIAL PRIMARY KEY,
@@ -160,8 +127,7 @@ CREATE TABLE bot_settings (
 INSERT INTO bot_settings(key, value) VALUES
     ('max_warnings', '3'),
     ('mute_duration_minutes', '60'),
-    ('welcome_message', 'Guruhga xush kelibsiz!'),
-    ('ai_system_prompt', 'Siz Uzimiznikilar jamoasining AI yordamchisisiz. Uzimiznikilar — O''zbekistonlik mutaxassislar, ishbilarmonlar va professionallar hamjamiyati. Har qanday savolga o''zbek tilida, samimiy, qisqa va foydali tarzda javob bering. Agar hujjatlardan ma''lumot berilgan bo''lsa, shuni asosida javob bering.');
+    ('welcome_message', 'Guruhga xush kelibsiz!');
 
 -- ── DAILY STATS ───────────────────────────────────────────────
 CREATE TABLE daily_stats (
@@ -172,6 +138,5 @@ CREATE TABLE daily_stats (
     total_groups INTEGER DEFAULT 0,
     messages_count INTEGER DEFAULT 0,
     deleted_messages INTEGER DEFAULT 0,
-    ai_queries INTEGER DEFAULT 0,
     bans_count INTEGER DEFAULT 0
 );

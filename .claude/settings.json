@@ -1,0 +1,7 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(python -m py_compile bot/main.py bot/config.py bot/middlewares/moderation.py bot/handlers/admin_handler.py bot/handlers/group_commands.py bot/handlers/group_moderation.py bot/keyboards/admin.py database/queries.py database/connection.py bot/services/moderation.py bot/services/image_hash.py bot/handlers/scheduled_posts.py bot/services/scheduler.py bot/utils/helpers.py)"
+    ]
+  }
+}

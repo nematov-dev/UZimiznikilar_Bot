@@ -11,7 +11,6 @@ def admin_main_menu() -> ReplyKeyboardMarkup:
     )
     kb.row(
         KeyboardButton(text="🚫 Taqiqlangan so'zlar"),
-        KeyboardButton(text="📄 Hujjatlar (RAG)"),
     )
     kb.row(
         KeyboardButton(text="📢 Xabar yuborish"),
@@ -67,20 +66,6 @@ def group_settings_kb(group_id: int, settings: dict) -> InlineKeyboardMarkup:
         text=f"{toggle(settings.get('delete_join_leave', True))} Kirdi/chiqdi xabarlar",
         callback_data=f"grp_toggle:{group_id}:delete_join_leave"
     ))
-    builder.row(InlineKeyboardButton(
-        text=f"{toggle(settings.get('ai_enabled', True))} AI javoblar",
-        callback_data=f"grp_toggle:{group_id}:ai_enabled"
-    ))
-    return builder.as_markup()
-
-
-def document_list_kb(documents: list) -> InlineKeyboardMarkup:
-    builder = InlineKeyboardBuilder()
-    for doc in documents[:10]:
-        builder.row(InlineKeyboardButton(
-            text=f"🗑 {doc['title'][:30]}",
-            callback_data=f"del_doc:{doc['id']}"
-        ))
     return builder.as_markup()
 
 

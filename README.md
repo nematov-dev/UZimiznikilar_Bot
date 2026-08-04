@@ -1,8 +1,8 @@
 # 🤖 Uzimiznikilar Bot
 
-Telegram guruh boshqaruvi, avtomatik moderatsiya, AI yordamchi va rejalashtirilgan xabarlar uchun to'liq funksional bot.
+Telegram guruh boshqaruvi, avtomatik moderatsiya va rejalashtirilgan xabarlar uchun to'liq funksional bot.
 
-**Texnologiyalar:** Python 3.11+ · aiogram 3.x · PostgreSQL · Groq AI (LLaMA 3.3) · imagehash · NudeNet · opennsfw2
+**Texnologiyalar:** Python 3.11+ · aiogram 3.x · PostgreSQL · imagehash
 
 ---
 
@@ -18,8 +18,7 @@ Telegram guruh boshqaruvi, avtomatik moderatsiya, AI yordamchi va rejalashtirilg
 - [Guruh buyruqlari](#guruh-buyruqlari)
 - [Avtomatik moderatsiya](#avtomatik-moderatsiya)
 - [Taqiqlangan rasmlar](#taqiqlangan-rasmlar)
-- [18+ kontent filtri (NSFW)](#18-kontent-filtri-nsfw)
-- [AI va RAG tizimi](#ai-va-rag-tizimi)
+- [Taqiqlangan stiker to'plamlari](#taqiqlangan-stiker-toplamlari)
 - [Rejalashtirilgan xabarlar](#rejalashtirilgan-xabarlar)
 - [Tez-tez uchraydigan xatolar](#tez-tez-uchraydigan-xatolar)
 
@@ -34,20 +33,21 @@ Telegram guruh boshqaruvi, avtomatik moderatsiya, AI yordamchi va rejalashtirilg
 - Guruhda bot tomonidan yozilgan xabarni o'chirib, o'sha botni banlab qo'yadi
 - Kirish/chiqish xabarlarini o'chiradi (sozlamada yoqilganda)
 
+- Taqiqlangan so'z yoki rasm yuborsa — foydalanuvchining guruhdagi barcha xabarlari o'chirilib, umrbod yozolmaydigan qilinadi
+
 ### Taqiqlangan rasmlar (pHash + segment hashes)
 - Admin PM ga rasm yuboradi → bot saqlaydi
-- Guruhda kimdir o'sha rasmni yuborganda — avtomatik o'chiriladi
+- Guruhda kimdir o'sha rasmni yuborganda — avtomatik o'chiriladi va yuboruvchi restrict qilinadi
 - **pHash** — bir xil rasm o'lcham o'zgartirilgan yoki siqilsa ham aniqlanadi
 - **Segment hash (3x3 grid)** — kesilgan yoki screenshotga olingan rasm ham aniqlanadi
 - Admin panelda ro'yxat, qo'shish va o'chirish
 
-### 18+ kontent filtri (NSFW)
-- Dual model: NudeNet + opennsfw2
-- Rasm, GIF, stiker tekshiriladi
-- Har guruh uchun alohida on/off
+### Taqiqlangan stiker to'plamlari
+- `/banset` — reply qilingan stikerning to'plamini blacklistga qo'shadi
+- Guruhda shu to'plamdan stiker yuborilsa — avtomatik o'chiriladi
 
 ### Guruh admin buyruqlari
-`/ban`, `/unban`, `/kick`, `/mute`, `/unmute`, `/warn`, `/del`, `/clear`, `/info`, `/rules`, `/banimage`, `/unbanimage`, `/banset`
+`/ban`, `/unban`, `/kick`, `/mute`, `/unmute`, `/warn`, `/del`, `/clear`, `/info`, `/rules`, `/banimage`, `/unbanimage`, `/banset`, `/unbanset`
 
 ### Admin PM menyusi
 - Statistika ko'rish
@@ -55,15 +55,8 @@ Telegram guruh boshqaruvi, avtomatik moderatsiya, AI yordamchi va rejalashtirilg
 - Taqiqlangan rasmlar boshqaruvi
 - Guruh sozlamalari (har bir guruh uchun alohida togglelar)
 - Broadcast — foydalanuvchilar, guruhlar yoki hammaga
-- AI tizim promptini o'zgartirish
 - Rejalashtirilgan xabarlar boshqaruvi
 - Adminlar boshqaruvi
-
-### AI yordamchi (Groq / LLaMA 3.3)
-- Guruhda `@bot_username savol` yoki `/ai savol` — tez javob (45 soniya timeout)
-- RAG: admin yuklagan hujjatlar (PDF/DOCX/TXT) asosida javob (PM da)
-- Guruhda to'g'ridan-to'g'ri Groq API orqali tez javob
-- Non-admin PM → AI javob (fallback)
 
 ### Rejalashtirilgan xabarlar
 - Har kun belgilangan vaqtlarda guruhga xabar yuboradi
@@ -92,31 +85,26 @@ Uzimiznikilar_bot/
 │   │   │                            #     taqiqlangan rasmlar boshqaruvi
 │   │   ├── scheduled_posts.py       # PM: rejalashtirilgan xabarlar (FSM)
 │   │   ├── group_commands.py        # Guruh: /ban /mute /warn /banimage va h.k.
-│   │   ├── group_moderation.py      # Guruh: join/leave xabarlarini o'chirish
-│   │   └── rag_handler.py           # Hujjat yuklash + AI javob (guruh va PM)
+│   │   └── group_moderation.py      # Guruh: join/leave xabarlarini o'chirish
 │   │
 │   ├── middlewares/
 │   │   └── moderation.py            # Outer middleware: har xabar tekshiruvi
-│   │                                #   (havola, so'z, NSFW, taqiqlangan rasm)
+│   │                                #   (havola, so'z, taqiqlangan rasm/stiker)
 │   │
 │   └── services/
 │       ├── moderation.py            # URL pattern, taqiqlangan so'z tekshiruvi
-│       ├── groq_ai.py               # Groq API (LLaMA 3.3) wrapper
-│       ├── rag_service.py           # RAG pipeline (embed → search → generate)
 │       ├── image_hash.py            # pHash + segment hashes (taqiqlangan rasmlar)
-│       ├── nsfw_checker.py          # Dual model NSFW tekshiruvi
-│       ├── scheduler.py             # Kunlik xabar yuborish background loop
-│       └── vertex_ai.py             # (legacy) Vertex AI embedding
+│       └── scheduler.py             # Kunlik xabar yuborish background loop
 │
 └── database/
     ├── connection.py                # asyncpg connection pool
     ├── queries.py                   # Barcha DB so'rovlar
     ├── init.sql                     # Asosiy jadvallar (birinchi marta)
     ├── migrate_scheduled_posts.sql  # scheduled_posts jadvali
-    ├── migrate_groq.sql             # Groq AI uchun bot_settings
     ├── migrate_nsfw.sql             # anti_nsfw ustuni
     ├── migrate_banned_images.sql    # banned_images jadvali
-    └── migrate_banned_images_v2.sql # segment_hashes ustuni
+    ├── migrate_banned_images_v2.sql # segment_hashes ustuni
+    └── migrate_remove_ai.sql        # AI (Groq/RAG) jadval/ustunlarini o'chirish
 ```
 
 ---
@@ -127,7 +115,6 @@ Uzimiznikilar_bot/
 
 - Python 3.11 yoki yuqori
 - PostgreSQL 14+
-- Groq API kalit (bepul: [console.groq.com](https://console.groq.com))
 
 ### 1. Reponi klonlash
 
@@ -179,9 +166,6 @@ DB_NAME=aiogram
 DB_USER=postgres
 DB_PASSWORD=1234
 
-# --- Groq AI ---
-GROQ_API_KEY=gsk_...                  # console.groq.com dan olingan kalit
-
 # --- Bot sozlamalari ---
 MAX_WARNINGS=3
 MUTE_DURATION_MINUTES=60
@@ -200,17 +184,17 @@ psql -U postgres -d aiogram -f database/init.sql
 # 2. Rejalashtirilgan xabarlar
 psql -U postgres -d aiogram -f database/migrate_scheduled_posts.sql
 
-# 3. Groq AI sozlamalari
-psql -U postgres -d aiogram -f database/migrate_groq.sql
-
-# 4. NSFW filtri ustuni
+# 3. NSFW/stiker filtri ustuni
 psql -U postgres -d aiogram -f database/migrate_nsfw.sql
 
-# 5. Taqiqlangan rasmlar (pHash)
+# 4. Taqiqlangan rasmlar (pHash)
 psql -U postgres -d aiogram -f database/migrate_banned_images.sql
 
-# 6. Segment hashes ustuni (kesib yuborilgan/screenshot rasmlar uchun)
+# 5. Segment hashes ustuni (kesib yuborilgan/screenshot rasmlar uchun)
 psql -U postgres -d aiogram -f database/migrate_banned_images_v2.sql
+
+# 6. Eski o'rnatishda AI (Groq/RAG) qoldiqlarini tozalash (faqat mavjud DB uchun)
+psql -U postgres -d aiogram -f database/migrate_remove_ai.sql
 ```
 
 ### Jadvallar ro'yxati
@@ -224,11 +208,9 @@ psql -U postgres -d aiogram -f database/migrate_banned_images_v2.sql
 | `messages` | Xabar logi (o'chirilganlar bilan) |
 | `banned_words` | Taqiqlangan so'zlar ro'yxati |
 | `banned_images` | Taqiqlangan rasmlar (phash + segment_hashes) |
-| `documents` | Admin yuklagan hujjatlar |
-| `document_chunks` | Hujjat bo'laklari + vektorlar (pgvector) |
 | `broadcasts` | Yuborilgan broadcast tarixi |
 | `admin_actions` | Admin harakatlari logi |
-| `bot_settings` | Kalit-qiymat sozlamalar (AI prompt va h.k.) |
+| `bot_settings` | Kalit-qiymat sozlamalar |
 | `scheduled_posts` | Rejalashtirilgan xabarlar |
 
 ---
@@ -259,13 +241,12 @@ Botga shaxsiy xabar yozing — admin bo'lsangiz menyu chiqadi.
 ```
 📊 Statistika          🚫 Taqiqlangan so'zlar
 🏘️ Guruhlar            📢 Xabar yuborish
-📅 Rejalashtirilgan xabarlar
-🖼 Taqiqlangan rasmlar  ⚙️ Sozlamalar
+📅 Rejalashtirilgan xabarlar  🖼 Taqiqlangan rasmlar
 👤 Adminlar boshqaruvi
 ```
 
 ### Statistika
-Jami foydalanuvchilar / banlangan, faol guruhlar, bugungi xabarlar / o'chirilganlar, yuklangan hujjatlar.
+Jami foydalanuvchilar / banlangan, faol guruhlar, bugungi xabarlar / o'chirilganlar.
 
 ### Taqiqlangan so'zlar
 So'zlar ro'yxati, yangi qo'shish, o'chirish (inline tasdiqlash).
@@ -282,11 +263,10 @@ Har bir guruh uchun alohida toggle:
 
 | Toggle | Ta'rif |
 |---|---|
-| `anti_links` | Havola bo'lsa o'chirish |
-| `anti_profanity` | Taqiqlangan so'z bo'lsa o'chirish |
-| `anti_nsfw` | 18+ kontent (rasm/gif/stiker) bo'lsa o'chirish |
+| `anti_links` | Havola/reklama bo'lsa o'chirish |
+| `anti_profanity` | Taqiqlangan so'z bo'lsa — foydalanuvchining hamma xabarini o'chirib, restrict qilish |
+| `anti_nsfw` | Taqiqlangan stiker to'plami bo'lsa o'chirish |
 | `delete_join_leave` | Kirish/chiqish xabarlarni o'chirish |
-| `ai_enabled` | AI javoblarni yoqish/o'chirish |
 
 ### Broadcast
 Nishon tanlang (Foydalanuvchilar / Guruhlar / Hammaga) → xabar yozing → yuborilgach natija ko'rsatiladi.
@@ -309,10 +289,10 @@ Bot guruhda **admin** bo'lishi shart. Buyruqlar reply yoki `@username` bilan ish
 | `/clear [N]` | So'nggi N ta xabarni o'chirish (max 100) |
 | `/info` | Foydalanuvchi haqida ma'lumot |
 | `/rules` | Guruh qoidalari |
-| `/ai [savol]` | AI yordamchiga savol |
 | `/banimage [izoh]` | Reply qilingan rasmni taqiqlash |
 | `/unbanimage` | Reply qilingan rasmdan taqiqni olib tashlash |
-| `/banset` | Stiker to'plamini bloklash/blokdan chiqarish |
+| `/banset` | Reply qilingan stiker to'plamini bloklash |
+| `/unbanset` | Reply qilingan stiker to'plamini blokdan chiqarish |
 
 ---
 
@@ -330,9 +310,9 @@ Xabar keldi
     |
     +-- Foydalanuvchi xabari (admin emas):
             +-- anti_links yoqilgan va havola bor? --> o'chir
-            +-- anti_profanity yoqilgan va taqiq so'z? --> o'chir
-            +-- anti_nsfw yoqilgan va 18+ rasm/gif/stiker? --> o'chir
-            +-- Taqiqlangan rasm? --> o'chir
+            +-- anti_profanity yoqilgan va taqiq so'z? --> hamma xabarini o'chir + restrict
+            +-- Taqiqlangan rasm? --> hamma xabarini o'chir + restrict
+            +-- anti_nsfw yoqilgan va taqiqlangan stiker to'plami? --> o'chir
 ```
 
 ### Havola aniqlash
@@ -377,47 +357,9 @@ Taqiqlangan rasmlar xotirada keshlanadi — har xabarda DB ga murojaat yo'q. Yan
 
 ---
 
-## 18+ kontent filtri (NSFW)
+## Taqiqlangan stiker to'plamlari
 
-Dual model tizimi:
-
-| Model | Vazifasi |
-|---|---|
-| **NudeNet** | Anatomik aniqlash |
-| **opennsfw2** | Umumiy NSFW klassifikatsiya |
-
-Ikkala model natijasi birlashtirilib threshold bo'yicha qaror qabul qilinadi. Guruh sozlamalarida `anti_nsfw` toggle bilan boshqariladi.
-
-Tekshiriladigan tarkib: `photo`, `animation` (GIF), `sticker`.
-
----
-
-## AI va RAG tizimi
-
-### Guruhda ishlatish
-
-```
-@your_bot_username bu haqida nima deyilgan?
-/ai Uzimiznikilar loyihasi nima?
-```
-
-Guruh AI to'g'ridan-to'g'ri **Groq API** (LLaMA 3.3 70B) orqali ishlaydi.
-
-### Hujjat yuklash (admin PM)
-
-1. Botga PDF, DOCX yoki TXT fayl yuboring
-2. Bot bo'laklarga ajratib, vektorlaydi → pgvector ga saqlaydi
-3. PM da savol berilganda: savol vektorlashadi → eng yaqin bo'laklar → Groq kontekst bilan javob beradi
-
-### Javob vaqtlari
-
-| Holat | Usul | Timeout |
-|---|---|---|
-| Guruh AI | Groq to'g'ridan-to'g'ri | 45 soniya |
-| PM AI (hujjatsiz) | Groq to'g'ridan-to'g'ri | 60 soniya |
-| PM AI (hujjat bilan) | RAG + Groq | 60 soniya |
-
-Timeout bo'lsa: `"Javob vaqt tugdi. Iltimos, qayta urinib ko'ring."`
+Admin stikerga reply qilib `/banset` yozsa, o'sha stiker to'plamining `set_name`i `bot_settings` ga yoziladi. Guruh sozlamalarida `anti_nsfw` toggle bilan boshqariladi. `/unbanset` — blokdan chiqaradi.
 
 ---
 
@@ -463,11 +405,6 @@ psql -U postgres -d aiogram -f database/migrate_banned_images_v2.sql
 ### `ModuleNotFoundError: No module named 'imagehash'`
 ```bash
 pip install imagehash Pillow
-```
-
-### `ModuleNotFoundError: No module named 'nudenet'`
-```bash
-pip install nudenet opennsfw2
 ```
 
 ### Rasm taqiqlandi lekin guruhda o'chirilmayapti

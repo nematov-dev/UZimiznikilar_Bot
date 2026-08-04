@@ -1,10 +1,9 @@
 """Middleware: ro'yxatga olish + to'liq moderatsiya (outer)."""
 from typing import Callable, Dict, Any, Awaitable
 from aiogram import BaseMiddleware, Bot
-from aiogram.types import Message, TelegramObject
+from aiogram.types import Message, TelegramObject, ChatPermissions
 from database import queries
 from bot.services.moderation import check_message
-from bot.services.nsfw_checker import is_nsfw, is_nsfw_available
 from bot.services.image_hash import (
     compute_all_hashes_async, phash_distance, is_imagehash_available,
     PHASH_THRESHOLD, segment_hashes_from_str, check_segment_match
@@ -68,13 +67,38 @@ class BotMiddleware(BaseMiddleware):
             except Exception as e:
                 logger.warning(f"upsert_group: {e}")
 
-        # ── 3. Guruh moderatsiyasi ────────────────────────────────
+        # ── 3. Xabar ID ni DB ga yozish (delete uchun kerak) ────────
+        if is_group and event.from_user and event.message_id:
+            try:
+                await queries.log_message(
+                    group_id=event.chat.id,
+                    user_id=event.from_user.id,
+                    message_id=event.message_id,
+                    message_type=_get_msg_type(event),
+                )
+            except Exception:
+                pass
+
+        # ── 4. Guruh moderatsiyasi ────────────────────────────────
         if is_group and bot:
             blocked = await _moderate_group(event, bot)
             if blocked:
                 return
 
         return await handler(event, data)
+
+
+# ── Yordamchi: xabar turi ────────────────────────────────────
+
+def _get_msg_type(message: Message) -> str:
+    if message.photo:        return "photo"
+    if message.video:        return "video"
+    if message.sticker:      return "sticker"
+    if message.animation:    return "animation"
+    if message.document:     return "document"
+    if message.voice:        return "voice"
+    if message.audio:        return "audio"
+    return "text"
 
 
 # ── Yordamchi: xabar o'chirish ───────────────────────────────
@@ -98,6 +122,45 @@ async def _delete_msg(message: Message, reason: str) -> bool:
         else:
             logger.warning(f"delete failed [{reason}]: {e}")
         return False
+
+
+# ── Yordamchi: foydalanuvchining hamma xabarini o'chirib, restrict qilish ──
+
+async def _delete_all_and_restrict(bot: Bot, chat_id: int, user_id: int, reason: str):
+    """Foydalanuvchining guruhdagi barcha xabarlarini o'chiradi va umrbod yozolmaydigan qiladi."""
+    try:
+        msg_ids = await queries.get_user_message_ids(chat_id, user_id)
+    except Exception:
+        msg_ids = []
+
+    deleted = 0
+    for i in range(0, len(msg_ids), 100):
+        batch = msg_ids[i:i + 100]
+        try:
+            if len(batch) == 1:
+                await bot.delete_message(chat_id, batch[0])
+            else:
+                await bot.delete_messages(chat_id, batch)
+            deleted += len(batch)
+        except Exception as e:
+            logger.warning(f"batch delete xato: {e}")
+
+    logger.info(f"DELETED {deleted} messages ({reason}): user={user_id} chat={chat_id}")
+
+    try:
+        await bot.restrict_chat_member(
+            chat_id=chat_id,
+            user_id=user_id,
+            permissions=ChatPermissions(
+                can_send_messages=False,
+                can_send_media_messages=False,
+                can_send_other_messages=False,
+                can_add_web_page_previews=False,
+            ),
+        )
+        logger.info(f"RESTRICTED forever ({reason}): user={user_id} chat={chat_id}")
+    except Exception as e:
+        logger.warning(f"restrict xato: {e}")
 
 
 # ── Asosiy moderatsiya ────────────────────────────────────────
@@ -153,41 +216,38 @@ async def _moderate_group(message: Message, bot: Bot) -> bool:
             return True
 
         if result["has_profanity"] and group["anti_profanity"]:
-            logger.info(
-                f"PROFANITY: word={result['profane_word']!r} chat={message.chat.id}"
-            )
-            await _delete_msg(message, "PROFANITY")
+            word = result.get("profane_word", "?")
+            uid = message.from_user.id if message.from_user else None
+            cid = message.chat.id
+            logger.info(f"PROFANITY: word={word!r} user={uid} chat={cid}")
+            if uid:
+                await _delete_all_and_restrict(bot, cid, uid, "profanity")
+            else:
+                await _delete_msg(message, "PROFANITY")
             return True
 
     # ── D. Taqiqlangan rasm tekshiruvi (pHash) ────────────────────
     if message.photo and is_imagehash_available():
         banned = await _check_banned_image(message, bot)
         if banned:
-            await _delete_msg(message, "BANNED_IMAGE")
+            uid = message.from_user.id if message.from_user else None
+            cid = message.chat.id
+            logger.info(f"BANNED IMAGE: user={uid} chat={cid}")
+            if uid:
+                await _delete_all_and_restrict(bot, cid, uid, "banned_image")
+            else:
+                await _delete_msg(message, "BANNED_IMAGE")
             return True
 
-    # ── E. NSFW tekshiruvi ─────────────────────────────────────────
+    # ── E. Taqiqlangan stiker to'plami ──────────────────────────────
     anti_nsfw = group.get("anti_nsfw", True)
-    if anti_nsfw:
-        # E1. Stiker to'plami blacklist (AI dan ham tezroq)
-        if message.sticker and message.sticker.set_name:
-            set_name = message.sticker.set_name
-            banned_set = await queries.get_setting(f"banned_sticker_set_{set_name}")
-            if banned_set:
-                logger.info(f"BANNED STICKER SET: {set_name} in {message.chat.id}")
-                await _delete_msg(message, "BANNED_SET")
-                return True
-
-        # E2. AI orqali media tekshiruvi
-        if is_nsfw_available():
-            nsfw = await _check_media_nsfw(message, bot)
-            if nsfw:
-                if message.sticker and message.sticker.set_name:
-                    await _auto_blacklist_sticker_set(
-                        message.sticker.set_name, message.chat.id
-                    )
-                await _delete_msg(message, "NSFW")
-                return True
+    if anti_nsfw and message.sticker and message.sticker.set_name:
+        set_name = message.sticker.set_name
+        banned_set = await queries.get_setting(f"banned_sticker_set_{set_name}")
+        if banned_set:
+            logger.info(f"BANNED STICKER SET: {set_name} in {message.chat.id}")
+            await _delete_msg(message, "BANNED_SET")
+            return True
 
     return False
 
@@ -241,83 +301,3 @@ async def _check_banned_image(message: Message, bot: Bot) -> bool:
                 return True
 
     return False
-
-
-# ── Media NSFW tekshiruvi ─────────────────────────────────────
-
-async def _check_media_nsfw(message: Message, bot: Bot) -> bool:
-    """Rasm/GIF/stiker/video => NSFW tekshiruvi. True => 18+."""
-    file_id = None
-    ext = "jpg"
-
-    if message.photo:
-        file_id = message.photo[-1].file_id
-        ext = "jpg"
-    elif message.animation:
-        anim = message.animation
-        if anim.thumbnail:
-            file_id = anim.thumbnail.file_id
-            ext = "jpg"
-        else:
-            file_id = anim.file_id
-            ext = "mp4"
-    elif message.sticker:
-        sticker = message.sticker
-        if sticker.is_video:
-            if sticker.thumbnail:
-                file_id = sticker.thumbnail.file_id
-                ext = "jpg"
-            else:
-                file_id = sticker.file_id
-                ext = "webm"
-        elif sticker.is_animated:
-            if sticker.thumbnail:
-                file_id = sticker.thumbnail.file_id
-                ext = "jpg"
-            else:
-                return False
-        else:
-            file_id = sticker.file_id
-            ext = "webp"
-    elif message.video:
-        if message.video.thumbnail:
-            file_id = message.video.thumbnail.file_id
-            ext = "jpg"
-        else:
-            file_id = message.video.file_id
-            ext = "mp4"
-    elif message.document:
-        mime = message.document.mime_type or ""
-        if mime.startswith("image/"):
-            file_id = message.document.file_id
-            ext = mime.split("/")[-1].replace("jpeg", "jpg")
-
-    if not file_id:
-        return False
-
-    try:
-        tg_file = await bot.get_file(file_id)
-        if tg_file.file_size and tg_file.file_size > 15 * 1024 * 1024:
-            logger.debug(f"Fayl juda katta ({tg_file.file_size}), skip")
-            return False
-        buf = await bot.download_file(tg_file.file_path)
-        file_bytes = buf.read() if hasattr(buf, "read") else bytes(buf)
-        return await is_nsfw(file_bytes, ext)
-    except Exception as e:
-        logger.warning(f"NSFW media yuklab olishda xato: {e}")
-        return False
-
-
-# ── Stiker to'plamini avtomat blacklistga qo'shish ────────────
-
-async def _auto_blacklist_sticker_set(set_name: str, chat_id: int):
-    try:
-        existing = await queries.get_setting(f"banned_sticker_set_{set_name}")
-        if not existing:
-            await queries.set_setting(f"banned_sticker_set_{set_name}", "1")
-            logger.info(
-                f"AUTO BLACKLIST sticker set: {set_name} "
-                f"(NSFW topildi, chat={chat_id})"
-            )
-    except Exception as e:
-        logger.warning(f"Auto blacklist xato: {e}")

@@ -52,8 +52,7 @@ def admin_menu() -> ReplyKeyboardMarkup:
     b = ReplyKeyboardBuilder()
     b.row(KeyboardButton(text="📊 Statistika"), KeyboardButton(text="🚫 Taqiqlangan so'zlar"))
     b.row(KeyboardButton(text="🏘️ Guruhlar"), KeyboardButton(text="📢 Xabar yuborish"))
-    b.row(KeyboardButton(text="📅 Rejalashtirilgan xabarlar"))
-    b.row(KeyboardButton(text="🖼 Taqiqlangan rasmlar"), KeyboardButton(text="⚙️ Sozlamalar"))
+    b.row(KeyboardButton(text="📅 Rejalashtirilgan xabarlar"), KeyboardButton(text="🖼 Taqiqlangan rasmlar"))
     b.row(KeyboardButton(text="👤 Adminlar boshqaruvi"))
     return b.as_markup(resize_keyboard=True)
 
@@ -109,10 +108,6 @@ def group_settings_kb(gid: int, g: dict) -> InlineKeyboardMarkup:
         text=f"{s(g['delete_join_leave'])} Kirdi/chiqdi o'chirish",
         callback_data=f"gtoggle:{gid}:delete_join_leave"
     ))
-    b.row(InlineKeyboardButton(
-        text=f"{s(g['ai_enabled'])} AI javoblar",
-        callback_data=f"gtoggle:{gid}:ai_enabled"
-    ))
     b.row(InlineKeyboardButton(text="◀️ Orqaga", callback_data="grp_back"))
     return b.as_markup()
 
@@ -124,9 +119,7 @@ async def cmd_start(message: Message, state: FSMContext):
     await state.clear()
     if not await is_bot_admin(message.from_user.id):
         await message.answer(
-            "Salom! Men <b>Uzimiznikilar AI yordamchisi</b>man 🤖\n\n"
-            "Guruhda menga savol bering yoki ismimni yozing — "
-            "hujjatlar asosida javob beraman.",
+            "Salom! Men <b>Uzimiznikilar</b> guruh boshqaruv botiman 🤖",
             parse_mode="HTML"
         )
         return
@@ -151,8 +144,7 @@ async def show_stats(message: Message):
         f"🚫 Banlangan: <b>{stats['banned_users']}</b>\n"
         f"🏘️ Guruhlar: <b>{stats['total_groups']}</b>\n"
         f"💬 Bugungi xabarlar: <b>{stats['messages_today']}</b>\n"
-        f"🗑 O'chirilgan: <b>{stats['deleted_today']}</b>\n"
-        f"📄 Hujjatlar (RAG): <b>{stats['documents']}</b>",
+        f"🗑 O'chirilgan: <b>{stats['deleted_today']}</b>",
         parse_mode="HTML"
     )
 
@@ -561,48 +553,6 @@ async def adm_del(cb: CallbackQuery):
     await cb.message.edit_text(text, parse_mode="HTML", reply_markup=kb)
 
 
-# ── ⚙️ Sozlamalar — faqat AI prompt ──────────────────────────
-
-class PromptState(StatesGroup):
-    waiting = State()
-
-
-@router.message(F.text == "⚙️ Sozlamalar")
-async def show_settings(message: Message, state: FSMContext):
-    if not await is_bot_admin(message.from_user.id):
-        return
-    await state.clear()
-    prompt = await queries.get_setting("ai_system_prompt") or "Sozlanmagan"
-    b = InlineKeyboardBuilder()
-    b.row(InlineKeyboardButton(text="✏️ Promptni o'zgartirish", callback_data="set_prompt"))
-    await message.answer(
-        f"⚙️ <b>AI Prompt</b>\n\n<i>{prompt}</i>",
-        parse_mode="HTML",
-        reply_markup=b.as_markup()
-    )
-
-
-@router.callback_query(F.data == "set_prompt")
-async def set_prompt_start(cb: CallbackQuery, state: FSMContext):
-    if not await is_bot_admin(cb.from_user.id):
-        return await cb.answer("Ruxsat yo'q")
-    await state.set_state(PromptState.waiting)
-    await cb.message.answer(
-        "Yangi AI promptini yozing:", reply_markup=cancel_kb()
-    )
-    await cb.answer()
-
-
-@router.message(PromptState.waiting)
-async def set_prompt_receive(message: Message, state: FSMContext):
-    if message.text == "❌ Bekor":
-        await state.clear()
-        return await message.answer("Bekor.", reply_markup=admin_menu())
-    await queries.set_setting("ai_system_prompt", message.text.strip())
-    await state.clear()
-    await message.answer("✅ AI prompt yangilandi.", reply_markup=admin_menu())
-
-
 # ── /addword /delword ─────────────────────────────────────────
 
 @router.message(Command("addword"))
@@ -875,42 +825,10 @@ async def go_main_menu(cb: CallbackQuery):
 
 @router.message(StateFilter(None))
 async def pm_fallback(message: Message):
-    text = (message.text or message.caption or "").strip()
     is_admin = await is_bot_admin(message.from_user.id)
-
-    if text.lower().startswith("/ai"):
-        question = text[3:].strip()
-        if not question:
-            return await message.answer("Savol kiriting: /ai <savol>")
-        await _pm_ai_answer(message, question)
-        return
-
-    if text.startswith("/"):
-        if is_admin:
-            await message.answer("Menyu:", reply_markup=admin_menu())
-        return
 
     if is_admin:
         await message.answer("Menyu:", reply_markup=admin_menu())
         return
 
-    if text:
-        await _pm_ai_answer(message, text)
-    else:
-        await message.answer("Salom! Men Uzimiznikilar AI yordamchisiman.\n\nSavol yozing - javob beraman!")
-
-
-async def _pm_ai_answer(message: Message, question: str):
-    import asyncio
-    from bot.services.rag_service import answer_question_direct
-    from bot.services.groq_ai import is_groq_ready
-
-    if not is_groq_ready():
-        return await message.answer("AI hozircha sozlanmagan. .env ga GROQ_API_KEY ni qo'shing.")
-
-    msg = await message.answer("AI o'ylamoqda...")
-    try:
-        answer = await asyncio.wait_for(answer_question_direct(question), timeout=45)
-        await msg.edit_text(answer, parse_mode="HTML")
-    except asyncio.TimeoutError:
-        await msg.edi
+    await message.answer("Salom! Men Uzimiznikilar guruh boshqaruv botiman.")
