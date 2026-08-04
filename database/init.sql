@@ -68,8 +68,8 @@ CREATE TABLE muted_users (
 -- ── MESSAGES LOG ─────────────────────────────────────────────
 CREATE TABLE messages (
     id BIGSERIAL PRIMARY KEY,
-    group_id BIGINT REFERENCES groups(id) ON DELETE CASCADE,
-    user_id BIGINT REFERENCES users(id) ON DELETE CASCADE,
+    group_id BIGINT REFERENCES groups(telegram_id) ON DELETE CASCADE,
+    user_id BIGINT REFERENCES users(telegram_id) ON DELETE CASCADE,
     message_id BIGINT NOT NULL,
     message_type TEXT DEFAULT 'text',
     was_deleted BOOLEAN DEFAULT FALSE,
