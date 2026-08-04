@@ -168,6 +168,10 @@ async def _delete_all_and_restrict(bot: Bot, chat_id: int, user_id: int, reason:
 async def _moderate_group(message: Message, bot: Bot) -> bool:
     """True → xabar bloklandi."""
 
+    # ── Anonim admin (guruh nomidan yozilgan xabar) → tegilmaymiz ──
+    if message.sender_chat and message.sender_chat.id == message.chat.id:
+        return False
+
     # ── A. Kanal xabari → o'chirish ─────────────────────────────
     if message.sender_chat and message.sender_chat.type == "channel":
         await _delete_msg(message, "CHANNEL")

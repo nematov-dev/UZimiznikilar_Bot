@@ -12,7 +12,10 @@ router = Router()
 router.message.filter(F.chat.type.in_({"group", "supergroup"}))
 
 
-async def is_admin(bot: Bot, chat_id: int, user_id: int) -> bool:
+async def is_admin(bot: Bot, chat_id: int, user_id: int, message: Message = None) -> bool:
+    # Anonim admin — guruh nomidan yozilgan xabar
+    if message is not None and message.sender_chat and message.sender_chat.id == chat_id:
+        return True
     try:
         member = await bot.get_chat_member(chat_id, user_id)
         return member.status in ("administrator", "creator")
@@ -37,7 +40,7 @@ def parse_reason(text: str) -> str:
 
 @router.message(Command("ban"))
 async def cmd_ban(message: Message, bot: Bot):
-    if not await is_admin(bot, message.chat.id, message.from_user.id):
+    if not await is_admin(bot, message.chat.id, message.from_user.id, message):
         return await message.reply("❌ Bu buyruq faqat adminlar uchun.")
 
     target = get_target_user(message)
@@ -66,7 +69,7 @@ async def cmd_ban(message: Message, bot: Bot):
 
 @router.message(Command("unban"))
 async def cmd_unban(message: Message, bot: Bot):
-    if not await is_admin(bot, message.chat.id, message.from_user.id):
+    if not await is_admin(bot, message.chat.id, message.from_user.id, message):
         return await message.reply("❌ Bu buyruq faqat adminlar uchun.")
 
     target = get_target_user(message)
@@ -92,7 +95,7 @@ async def cmd_unban(message: Message, bot: Bot):
 
 @router.message(Command("kick"))
 async def cmd_kick(message: Message, bot: Bot):
-    if not await is_admin(bot, message.chat.id, message.from_user.id):
+    if not await is_admin(bot, message.chat.id, message.from_user.id, message):
         return await message.reply("❌ Bu buyruq faqat adminlar uchun.")
 
     target = get_target_user(message)
@@ -120,7 +123,7 @@ async def cmd_kick(message: Message, bot: Bot):
 
 @router.message(Command("mute"))
 async def cmd_mute(message: Message, bot: Bot):
-    if not await is_admin(bot, message.chat.id, message.from_user.id):
+    if not await is_admin(bot, message.chat.id, message.from_user.id, message):
         return await message.reply("❌ Bu buyruq faqat adminlar uchun.")
 
     target = get_target_user(message)
@@ -170,7 +173,7 @@ async def cmd_mute(message: Message, bot: Bot):
 
 @router.message(Command("unmute"))
 async def cmd_unmute(message: Message, bot: Bot):
-    if not await is_admin(bot, message.chat.id, message.from_user.id):
+    if not await is_admin(bot, message.chat.id, message.from_user.id, message):
         return await message.reply("❌ Bu buyruq faqat adminlar uchun.")
 
     target = get_target_user(message)
@@ -203,7 +206,7 @@ async def cmd_unmute(message: Message, bot: Bot):
 
 @router.message(Command("warn"))
 async def cmd_warn(message: Message, bot: Bot):
-    if not await is_admin(bot, message.chat.id, message.from_user.id):
+    if not await is_admin(bot, message.chat.id, message.from_user.id, message):
         return await message.reply("❌ Bu buyruq faqat adminlar uchun.")
 
     target = get_target_user(message)
@@ -250,7 +253,7 @@ async def cmd_warn(message: Message, bot: Bot):
 @router.message(Command("clear"))
 async def cmd_clear(message: Message, bot: Bot):
     """Delete last N messages in chat. Usage: /clear [count=50]"""
-    if not await is_admin(bot, message.chat.id, message.from_user.id):
+    if not await is_admin(bot, message.chat.id, message.from_user.id, message):
         return await message.reply("❌ Bu buyruq faqat adminlar uchun.")
 
     parts = (message.text or "").split()
@@ -295,7 +298,7 @@ async def cmd_clear(message: Message, bot: Bot):
 @router.message(Command("del"))
 async def cmd_del(message: Message, bot: Bot):
     """Delete replied-to message."""
-    if not await is_admin(bot, message.chat.id, message.from_user.id):
+    if not await is_admin(bot, message.chat.id, message.from_user.id, message):
         return
     if message.reply_to_message:
         try:
@@ -313,7 +316,7 @@ async def cmd_del(message: Message, bot: Bot):
 @router.message(Command("info"))
 async def cmd_info(message: Message, bot: Bot):
     """Show info about replied-to user."""
-    if not await is_admin(bot, message.chat.id, message.from_user.id):
+    if not await is_admin(bot, message.chat.id, message.from_user.id, message):
         return
 
     target = get_target_user(message)
@@ -360,7 +363,7 @@ async def cmd_banset(message: Message, bot: Bot):
     Stiker to'plamini blacklistga qo'shish.
     Ishlatish: /banset — taqiqlanadigan stikerga reply qiling
     """
-    if not await is_admin(bot, message.chat.id, message.from_user.id):
+    if not await is_admin(bot, message.chat.id, message.from_user.id, message):
         return await message.reply("❌ Faqat adminlar uchun.")
 
     # Reply stikerga tekshirish
@@ -398,7 +401,7 @@ async def cmd_unbanset(message: Message, bot: Bot):
     Stiker to'plamini blacklistdan chiqarish.
     Ishlatish: /unbanset — stikerga reply qiling
     """
-    if not await is_admin(bot, message.chat.id, message.from_user.id):
+    if not await is_admin(bot, message.chat.id, message.from_user.id, message):
         return await message.reply("❌ Faqat adminlar uchun.")
 
     reply = message.reply_to_message
