@@ -126,14 +126,27 @@ async def _delete_msg(message: Message, reason: str) -> bool:
 
 # ── Yordamchi: foydalanuvchining hamma xabarini o'chirib, restrict qilish ──
 
-async def _delete_all_and_restrict(bot: Bot, chat_id: int, user_id: int, reason: str):
-    """Foydalanuvchining guruhdagi barcha xabarlarini o'chiradi va umrbod yozolmaydigan qiladi."""
+async def _delete_all_and_restrict(bot: Bot, message: Message, reason: str):
+    """
+    1. Tetiklovchi xabarni darhol o'chiradi (DB ga bog'liq emas — kafolatlangan).
+    2. Foydalanuvchining guruhdagi qolgan barcha xabarlarini DB dan topib o'chiradi.
+    3. Umrbod yozolmaydigan qilib restrict qiladi.
+    """
+    chat_id = message.chat.id
+    user_id = message.from_user.id
+    deleted = 0
+
+    # 1. Joriy xabar — darhol, hech nimaga qaramay
+    if await _delete_msg(message, reason.upper()):
+        deleted += 1
+
+    # 2. Qolgan eski xabarlar — DB dan
     try:
         msg_ids = await queries.get_user_message_ids(chat_id, user_id)
     except Exception:
         msg_ids = []
+    msg_ids = [mid for mid in msg_ids if mid != message.message_id]
 
-    deleted = 0
     for i in range(0, len(msg_ids), 100):
         batch = msg_ids[i:i + 100]
         try:
@@ -222,10 +235,9 @@ async def _moderate_group(message: Message, bot: Bot) -> bool:
         if result["has_profanity"] and group["anti_profanity"]:
             word = result.get("profane_word", "?")
             uid = message.from_user.id if message.from_user else None
-            cid = message.chat.id
-            logger.info(f"PROFANITY: word={word!r} user={uid} chat={cid}")
+            logger.info(f"PROFANITY: word={word!r} user={uid} chat={message.chat.id}")
             if uid:
-                await _delete_all_and_restrict(bot, cid, uid, "profanity")
+                await _delete_all_and_restrict(bot, message, "profanity")
             else:
                 await _delete_msg(message, "PROFANITY")
             return True
@@ -235,22 +247,25 @@ async def _moderate_group(message: Message, bot: Bot) -> bool:
         banned = await _check_banned_image(message, bot)
         if banned:
             uid = message.from_user.id if message.from_user else None
-            cid = message.chat.id
-            logger.info(f"BANNED IMAGE: user={uid} chat={cid}")
+            logger.info(f"BANNED IMAGE: user={uid} chat={message.chat.id}")
             if uid:
-                await _delete_all_and_restrict(bot, cid, uid, "banned_image")
+                await _delete_all_and_restrict(bot, message, "banned_image")
             else:
                 await _delete_msg(message, "BANNED_IMAGE")
             return True
 
-    # ── E. Taqiqlangan stiker to'plami ──────────────────────────────
+    # ── E. Taqiqlangan stiker to'plami (18+ va h.k.) ──────────────────
     anti_nsfw = group.get("anti_nsfw", True)
     if anti_nsfw and message.sticker and message.sticker.set_name:
         set_name = message.sticker.set_name
         banned_set = await queries.get_setting(f"banned_sticker_set_{set_name}")
         if banned_set:
-            logger.info(f"BANNED STICKER SET: {set_name} in {message.chat.id}")
-            await _delete_msg(message, "BANNED_SET")
+            uid = message.from_user.id if message.from_user else None
+            logger.info(f"BANNED STICKER SET: {set_name} user={uid} chat={message.chat.id}")
+            if uid:
+                await _delete_all_and_restrict(bot, message, "banned_sticker")
+            else:
+                await _delete_msg(message, "BANNED_SET")
             return True
 
     return False
