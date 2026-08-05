@@ -17,6 +17,9 @@ URL_PATTERN = re.compile(
     re.IGNORECASE,
 )
 
+# @username ko'rinishidagi reklama (kanal/guruhga taklif) — masalan "@mychannel"
+USERNAME_PATTERN = re.compile(r"@[A-Za-z][A-Za-z0-9_]{3,31}")
+
 _cache: List[str] = []
 _cache_loaded: bool = False
 
@@ -31,7 +34,7 @@ async def refresh_banned_words_cache():
 
 
 def contains_link(text: str) -> bool:
-    return bool(URL_PATTERN.search(text))
+    return bool(URL_PATTERN.search(text)) or bool(USERNAME_PATTERN.search(text))
 
 
 def contains_banned_word(text: str) -> tuple[bool, str]:

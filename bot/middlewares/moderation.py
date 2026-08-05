@@ -218,6 +218,19 @@ async def _moderate_group(message: Message, bot: Bot) -> bool:
     if is_admin:
         return False
 
+    # ── APK fayl → darhol o'chirish + yozolmaydigan qilish ─────────
+    if message.document:
+        fname = (message.document.file_name or "").lower()
+        mime = (message.document.mime_type or "").lower()
+        if fname.endswith(".apk") or mime == "application/vnd.android.package-archive":
+            uid = message.from_user.id if message.from_user else None
+            logger.info(f"APK FILE: name={fname!r} user={uid} chat={message.chat.id}")
+            if uid:
+                await _delete_all_and_restrict(bot, message, "apk_file")
+            else:
+                await _delete_msg(message, "APK_FILE")
+            return True
+
     # ── C. Matn/caption moderatsiyasi ─────────────────────────────
     text = message.text or message.caption or ""
     if text.strip():
