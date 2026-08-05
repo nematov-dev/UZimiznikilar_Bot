@@ -6,7 +6,8 @@
       "Bash(python -m py_compile database/init.sql)",
       "Bash(python -m py_compile bot/middlewares/moderation.py)",
       "Bash(python -m py_compile bot/middlewares/moderation.py bot/services/moderation.py)",
-      "Bash(python -c ' *)"
+      "Bash(python -c ' *)",
+      "Bash(python -m py_compile bot/middlewares/moderation.py bot/services/moderation.py database/queries.py)"
     ]
   }
 }

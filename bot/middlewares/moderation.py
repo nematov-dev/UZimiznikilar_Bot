@@ -218,6 +218,19 @@ async def _moderate_group(message: Message, bot: Bot) -> bool:
     if is_admin:
         return False
 
+    # ── Kontakt (raqam) yuborilsa → taqiqlangan so'zlar ro'yxatidan tekshirish ──
+    if message.contact and message.contact.phone_number:
+        digits = "".join(ch for ch in message.contact.phone_number if ch.isdigit())
+        result = await check_message(digits)
+        if result["has_profanity"]:
+            uid = message.from_user.id if message.from_user else None
+            logger.info(f"BANNED CONTACT: phone={digits} user={uid} chat={message.chat.id}")
+            if uid:
+                await _delete_all_and_restrict(bot, message, "banned_contact")
+            else:
+                await _delete_msg(message, "BANNED_CONTACT")
+            return True
+
     # ── APK fayl → darhol o'chirish + yozolmaydigan qilish ─────────
     if message.document:
         fname = (message.document.file_name or "").lower()
