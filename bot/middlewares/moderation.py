@@ -10,10 +10,40 @@ from bot.services.image_hash import (
     segment_hashes_from_str, check_segment_match
 )
 from loguru import logger
+import time
+import hashlib
+from collections import defaultdict
 
-# Cache: {phash: segment_hashes_str}
+# ── Banned images cache ───────────────────────────────────────
 _banned_images_cache: list[dict] = []
 _banned_images_loaded = False
+
+# ── Cross-group spam detection ────────────────────────────────
+# Tuzilma: { user_id: { text_key: [(chat_id, message_id, timestamp), ...] } }
+_cross_spam: dict[int, dict[str, list]] = defaultdict(lambda: defaultdict(list))
+_CROSS_SPAM_WINDOW   = 60    # soniya: shu vaqt ichida tekshiriladi
+_CROSS_SPAM_THRESHOLD = 3    # nechta guruhga yuborganda spam hisoblanadi
+
+
+def _text_key(text: str) -> str:
+    """Matnni normallashtirb, MD5 hash oladi — bir xil xabarlarni aniqlash uchun."""
+    normalized = " ".join(text.lower().split())
+    return hashlib.md5(normalized.encode()).hexdigest()
+
+
+def _cleanup_cross_spam(user_id: int, now: float):
+    """Eski (window'dan tashqari) yozuvlarni tozalaydi."""
+    keys_to_del = []
+    for key, entries in _cross_spam[user_id].items():
+        fresh = [(cid, mid, ts) for cid, mid, ts in entries if now - ts < _CROSS_SPAM_WINDOW]
+        if fresh:
+            _cross_spam[user_id][key] = fresh
+        else:
+            keys_to_del.append(key)
+    for k in keys_to_del:
+        del _cross_spam[user_id][k]
+    if not _cross_spam[user_id]:
+        del _cross_spam[user_id]
 
 
 async def _load_banned_images():
@@ -84,6 +114,12 @@ class BotMiddleware(BaseMiddleware):
         if is_group and bot:
             blocked = await _moderate_group(event, bot)
             if blocked:
+                return
+
+        # ── 5. Cross-group spam tekshiruvi ───────────────────────
+        if is_group and bot and event.from_user:
+            cross_spam = await _check_cross_group_spam(event, bot)
+            if cross_spam:
                 return
 
         return await handler(event, data)
@@ -308,6 +344,70 @@ async def _moderate_group(message: Message, bot: Bot) -> bool:
             return True
 
     return False
+
+
+# ── Cross-group spam o'chirish ────────────────────────────────
+
+async def _check_cross_group_spam(message: Message, bot: Bot) -> bool:
+    """
+    Bir foydalanuvchi 60 soniya ichida 3+ ta guruhga bir xil xabar
+    yuborganda — barchasini o'chiradi (restrict yo'q, faqat delete).
+    True => xabar spam sifatida topildi va o'chirildi.
+    """
+    if not message.from_user:
+        return False
+
+    # Faqat matn yoki caption bo'lgan xabarlar
+    text = message.text or message.caption or ""
+    if not text.strip():
+        return False
+
+    user_id  = message.from_user.id
+    chat_id  = message.chat.id
+    msg_id   = message.message_id
+    now      = time.time()
+    key      = _text_key(text)
+
+    # Eski yozuvlarni tozala
+    _cleanup_cross_spam(user_id, now)
+
+    # Joriy guruh allaqachon ro'yxatda bor-yo'qligini tekshir
+    existing_chats = {cid for cid, _, _ in _cross_spam[user_id][key]}
+    if chat_id not in existing_chats:
+        _cross_spam[user_id][key].append((chat_id, msg_id, now))
+
+    entries = _cross_spam[user_id][key]
+    unique_chats = {cid for cid, _, _ in entries}
+
+    if len(unique_chats) < _CROSS_SPAM_THRESHOLD:
+        return False
+
+    # === SPAM TOPILDI: barcha guruhlardagi xabarlarni o'chir ===
+    logger.info(
+        f"CROSS-GROUP SPAM: user={user_id} "
+        f"groups={list(unique_chats)} text={text[:60]!r}"
+    )
+
+    for spam_chat_id, spam_msg_id, _ in entries:
+        try:
+            await bot.delete_message(spam_chat_id, spam_msg_id)
+            logger.info(
+                f"CROSS-SPAM DELETED: chat={spam_chat_id} msg={spam_msg_id} user={user_id}"
+            )
+        except Exception as e:
+            logger.warning(f"cross-spam delete xato: chat={spam_chat_id} msg={spam_msg_id}: {e}")
+
+    # Joriy xabarni ham o'chir (entries da bo'lmasligi mumkin — yangi guruh)
+    if chat_id not in existing_chats:
+        try:
+            await bot.delete_message(chat_id, msg_id)
+        except Exception:
+            pass
+
+    # Cache dan tozala (qayta trigger bo'lmasin)
+    _cross_spam[user_id].pop(key, None)
+
+    return True
 
 
 # ── Taqiqlangan rasm tekshiruvi (pHash + segment) ────────────
