@@ -6,7 +6,8 @@ from database import queries
 from bot.services.moderation import check_message
 from bot.services.image_hash import (
     compute_all_hashes_async, phash_distance, is_imagehash_available,
-    PHASH_THRESHOLD, segment_hashes_from_str, check_segment_match
+    PHASH_THRESHOLD, SEGMENT_THRESHOLD, MIN_SEGMENT_MATCHES,
+    segment_hashes_from_str, check_segment_match
 )
 from loguru import logger
 
@@ -249,13 +250,23 @@ async def _moderate_group(message: Message, bot: Bot) -> bool:
     if text.strip():
         result = await check_message(text)
 
-
+        # URL (http/www/t.me) — faqat o'chirish, restrict YO'Q
         if result["has_link"] and group["anti_links"]:
             logger.info(
                 f"LINK: user={message.from_user.id if message.from_user else '?'} "
                 f"chat={message.chat.id} text={text[:60]!r}"
             )
             await _delete_msg(message, "LINK")
+            return True
+
+        # @username reklama — faqat o'chirish, restrict YO'Q
+        if result.get("has_username_ad") and group["anti_links"]:
+            uid = message.from_user.id if message.from_user else "?"
+            logger.info(
+                f"USERNAME_AD: user={uid} "
+                f"chat={message.chat.id} text={text[:60]!r}"
+            )
+            await _delete_msg(message, "USERNAME_AD")
             return True
 
         if result["has_profanity"] and group["anti_profanity"]:
@@ -269,12 +280,14 @@ async def _moderate_group(message: Message, bot: Bot) -> bool:
             return True
 
     # ── D. Taqiqlangan rasm tekshiruvi (pHash) ────────────────────
+    # media_group bo'lsa ham (bir nechta rasm), butun xabar o'chiriladi
     if message.photo and is_imagehash_available():
         banned = await _check_banned_image(message, bot)
         if banned:
             uid = message.from_user.id if message.from_user else None
             logger.info(f"BANNED IMAGE: user={uid} chat={message.chat.id}")
             if uid:
+                # Butun xabarni + barcha eski xabarlarni o'chiradi va restrict qo'yadi
                 await _delete_all_and_restrict(bot, message, "banned_image")
             else:
                 await _delete_msg(message, "BANNED_IMAGE")
@@ -299,10 +312,23 @@ async def _moderate_group(message: Message, bot: Bot) -> bool:
 
 # ── Taqiqlangan rasm tekshiruvi (pHash + segment) ────────────
 
+# Sezgirlik sozlamalari (noto'g'ri bloklashni kamaytirish uchun)
+# PHASH_THRESHOLD — import qilinadi (image_hash.py dan)
+# Segment uchun: ko'proq segment mos kelishi shart
+_LOCAL_SEGMENT_THRESHOLD = 4    # (image_hash.py dagi 6 dan qattiqroq)
+_LOCAL_MIN_SEGMENT_MATCHES = 4  # (image_hash.py dagi 2 dan ko'proq mos kelishi kerak)
+
+
 async def _check_banned_image(message: Message, bot: Bot) -> bool:
     """
     pHash (tez) + segment hash (kesish/screenshot) tekshiruvi.
     True => taqiqlangan rasm.
+
+    Sezgirlik:
+      - pHash: <= PHASH_THRESHOLD (8) => bir xil rasm
+      - Segment: kamida _LOCAL_MIN_SEGMENT_MATCHES (4) ta segment
+        _LOCAL_SEGMENT_THRESHOLD (4) masofasida mos kelsa => topildi
+        (bu noto'g'ri bloklashni sezilarli kamaytiradi)
     """
     global _banned_images_cache, _banned_images_loaded
 
@@ -334,15 +360,26 @@ async def _check_banned_image(message: Message, bot: Bot) -> bool:
         banned_phash = entry["phash"]
         banned_segs = segment_hashes_from_str(entry.get("segment_hashes") or "")
 
-        # 1. Tez tekshiruv: butun rasm pHash
-        if phash_distance(incoming_phash, banned_phash) <= PHASH_THRESHOLD:
-            logger.info(f"BANNED IMAGE (phash): chat={message.chat.id} user={uid}")
+        # 1. Tez tekshiruv: butun rasm pHash (asosiy, eng aniq)
+        dist = phash_distance(incoming_phash, banned_phash)
+        if dist <= PHASH_THRESHOLD:
+            logger.info(
+                f"BANNED IMAGE (phash dist={dist}): chat={message.chat.id} user={uid}"
+            )
             return True
 
-        # 2. Segment tekshiruv: kesish/screenshot uchun
+        # 2. Segment tekshiruv: faqat aniq kesish/screenshot uchun
+        #    Noto'g'ri bloklashni kamaytirish uchun qattiqroq sozlamalar
         if banned_segs and incoming_segments:
-            if check_segment_match(incoming_segments, banned_segs):
-                logger.info(f"BANNED IMAGE (segment): chat={message.chat.id} user={uid}")
+            if check_segment_match(
+                incoming_segments,
+                banned_segs,
+                threshold=_LOCAL_SEGMENT_THRESHOLD,
+                min_matches=_LOCAL_MIN_SEGMENT_MATCHES,
+            ):
+                logger.info(
+                    f"BANNED IMAGE (segment match): chat={message.chat.id} user={uid}"
+                )
                 return True
 
     return False
