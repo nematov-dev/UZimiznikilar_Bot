@@ -19,10 +19,18 @@ _banned_images_cache: list[dict] = []
 _banned_images_loaded = False
 
 # ── Cross-group spam detection ────────────────────────────────
-# Tuzilma: { user_id: { text_key: [(chat_id, message_id, timestamp), ...] } }
-_cross_spam: dict[int, dict[str, list]] = defaultdict(lambda: defaultdict(list))
-_CROSS_SPAM_WINDOW   = 60    # soniya: shu vaqt ichida tekshiriladi
-_CROSS_SPAM_THRESHOLD = 3    # nechta guruhga yuborganda spam hisoblanadi
+# 2 bosqichli tizim:
+#   1. TRACKING: birinchi 3 guruh — yig'ib boriladi, o'chirilmaydi
+#   2. BLOCKING: 3 ta guruh topilgandan keyin — keyingi hamma guruhdan o'chiriladi
+#
+# _cross_spam: kuzatuv (qaysi guruhga yuborganini sanaydi)
+# _known_spam: tasdiqlangan spam — user+key → aniqlangan vaqt
+_cross_spam: dict[int, dict[str, set]] = defaultdict(lambda: defaultdict(set))
+_known_spam: dict[int, dict[str, float]] = defaultdict(dict)  # user_id -> {key: detected_at}
+
+_CROSS_SPAM_WINDOW    = 60      # soniya: tracking oynasi
+_CROSS_SPAM_THRESHOLD = 3       # nechta guruhdan keyin spam belgilanadi
+_KNOWN_SPAM_TTL       = 3600    # spam belgi qancha vaqt saqlanadi (1 soat)
 
 
 def _text_key(text: str) -> str:
@@ -31,19 +39,27 @@ def _text_key(text: str) -> str:
     return hashlib.md5(normalized.encode()).hexdigest()
 
 
+def _make_content_key(text: str, media_uid: str | None) -> str:
+    """Matn + media kombinatsiyasidan yagona kalit."""
+    raw = f"{_text_key(text)}|{media_uid or ''}"
+    return hashlib.md5(raw.encode()).hexdigest()
+
+
 def _cleanup_cross_spam(user_id: int, now: float):
-    """Eski (window'dan tashqari) yozuvlarni tozalaydi."""
-    keys_to_del = []
-    for key, entries in _cross_spam[user_id].items():
-        fresh = [(cid, mid, ts) for cid, mid, ts in entries if now - ts < _CROSS_SPAM_WINDOW]
-        if fresh:
-            _cross_spam[user_id][key] = fresh
-        else:
-            keys_to_del.append(key)
-    for k in keys_to_del:
-        del _cross_spam[user_id][k]
-    if not _cross_spam[user_id]:
-        del _cross_spam[user_id]
+    """Eski tracking va known_spam yozuvlarini tozalaydi."""
+    # Tracking tozalash: window dan tashqari guruhlarni o'chirishning iloji yo'q
+    # (set da timestamp yo'q), shuning uchun biz butun keyni window dan keyin o'chiramiz.
+    # Oddiy yondashuv: key ga birinchi ko'ringan vaqtni saqlaymiz — lekin bu qimmat.
+    # Hozir known_spam TTL ni tozalaymiz:
+    if user_id in _known_spam:
+        keys_to_del = [
+            k for k, ts in _known_spam[user_id].items()
+            if now - ts > _KNOWN_SPAM_TTL
+        ]
+        for k in keys_to_del:
+            del _known_spam[user_id][k]
+        if not _known_spam[user_id]:
+            del _known_spam[user_id]
 
 
 async def _load_banned_images():
@@ -110,16 +126,18 @@ class BotMiddleware(BaseMiddleware):
             except Exception:
                 pass
 
+        # ── 3.5. Cross-group spam TRACKING (moderatsiyadan oldin) ─────
+        # Xabar tarkibidan qat'iy nazar: link, matn, caption — hammasi kuzatiladi.
+        # 3+ guruhga bir xil xabar yuborganda — barchasi o'chiriladi.
+        if is_group and bot and event.from_user:
+            cross_deleted = await _check_cross_group_spam(event, bot)
+            if cross_deleted:
+                return  # Spam o'chirildi, keyingi tekshiruvlar shart emas
+
         # ── 4. Guruh moderatsiyasi ────────────────────────────────
         if is_group and bot:
             blocked = await _moderate_group(event, bot)
             if blocked:
-                return
-
-        # ── 5. Cross-group spam tekshiruvi ───────────────────────
-        if is_group and bot and event.from_user:
-            cross_spam = await _check_cross_group_spam(event, bot)
-            if cross_spam:
                 return
 
         return await handler(event, data)
@@ -350,64 +368,85 @@ async def _moderate_group(message: Message, bot: Bot) -> bool:
 
 async def _check_cross_group_spam(message: Message, bot: Bot) -> bool:
     """
-    Bir foydalanuvchi 60 soniya ichida 3+ ta guruhga bir xil xabar
-    yuborganda — barchasini o'chiradi (restrict yo'q, faqat delete).
-    True => xabar spam sifatida topildi va o'chirildi.
+    2 bosqichli cross-group spam aniqlash:
+
+    BOSQICH 1 — TRACKING (1, 2, 3-guruh):
+      Xabar guruh ro'yxatiga qo'shiladi. O'chirilmaydi.
+      3 ta turli guruhga yuborganda → spam belgilanadi (_known_spam ga yoziladi).
+
+    BOSQICH 2 — BLOCKING (4, 5, 6...guruh):
+      Xuddi shu foydalanuvchi xuddi shu kontentni yana yuborganda
+      darhol o'chiriladi.
+
+    True => xabar o'chirildi (faqat BOSQICH 2 da).
     """
     if not message.from_user:
         return False
 
-    # Faqat matn yoki caption bo'lgan xabarlar
-    text = message.text or message.caption or ""
-    if not text.strip():
+    # Kontent kalitini yasash (matn + media)
+    text = (message.text or message.caption or "").strip()
+
+    media_uid = None
+    if message.photo:
+        media_uid = message.photo[-1].file_unique_id
+    elif message.video:
+        media_uid = message.video.file_unique_id
+    elif message.document:
+        media_uid = message.document.file_unique_id
+    elif message.audio:
+        media_uid = message.audio.file_unique_id
+    elif message.sticker:
+        media_uid = message.sticker.file_unique_id
+    elif message.animation:
+        media_uid = message.animation.file_unique_id
+
+    if not text and not media_uid:
         return False
 
-    user_id  = message.from_user.id
-    chat_id  = message.chat.id
-    msg_id   = message.message_id
-    now      = time.time()
-    key      = _text_key(text)
+    key     = _make_content_key(text, media_uid)
+    user_id = message.from_user.id
+    chat_id = message.chat.id
+    msg_id  = message.message_id
+    now     = time.time()
 
-    # Eski yozuvlarni tozala
+    # Eski ma'lumotlarni tozala
     _cleanup_cross_spam(user_id, now)
 
-    # Joriy guruh allaqachon ro'yxatda bor-yo'qligini tekshir
-    existing_chats = {cid for cid, _, _ in _cross_spam[user_id][key]}
-    if chat_id not in existing_chats:
-        _cross_spam[user_id][key].append((chat_id, msg_id, now))
-
-    entries = _cross_spam[user_id][key]
-    unique_chats = {cid for cid, _, _ in entries}
-
-    if len(unique_chats) < _CROSS_SPAM_THRESHOLD:
-        return False
-
-    # === SPAM TOPILDI: barcha guruhlardagi xabarlarni o'chir ===
-    logger.info(
-        f"CROSS-GROUP SPAM: user={user_id} "
-        f"groups={list(unique_chats)} text={text[:60]!r}"
-    )
-
-    for spam_chat_id, spam_msg_id, _ in entries:
-        try:
-            await bot.delete_message(spam_chat_id, spam_msg_id)
-            logger.info(
-                f"CROSS-SPAM DELETED: chat={spam_chat_id} msg={spam_msg_id} user={user_id}"
-            )
-        except Exception as e:
-            logger.warning(f"cross-spam delete xato: chat={spam_chat_id} msg={spam_msg_id}: {e}")
-
-    # Joriy xabarni ham o'chir (entries da bo'lmasligi mumkin — yangi guruh)
-    if chat_id not in existing_chats:
+    # ── BOSQICH 2: Allaqachon spam belgilangan? → darhol o'chir ──
+    if user_id in _known_spam and key in _known_spam[user_id]:
+        log_text = text[:60] if text else f"[media:{media_uid}]"
+        logger.info(
+            f"CROSS-SPAM BLOCKED (known): user={user_id} "
+            f"chat={chat_id} msg={msg_id} content={log_text!r}"
+        )
         try:
             await bot.delete_message(chat_id, msg_id)
-        except Exception:
-            pass
+        except Exception as e:
+            logger.warning(f"cross-spam delete xato: {e}")
+        return True
 
-    # Cache dan tozala (qayta trigger bo'lmasin)
+    # ── BOSQICH 1: Tracking — bu guruhni qo'shib, sanab boramiz ──
+    _cross_spam[user_id][key].add(chat_id)   # set → bir guruh bir marta hisoblanadi
+    unique_count = len(_cross_spam[user_id][key])
+
+    if unique_count < _CROSS_SPAM_THRESHOLD:
+        # Hali spam emas — xabar qoladi
+        return False
+
+    # === SPAM BELGILANDI: endi keyingi guruhlarda o'chiriladi ===
+    log_text = text[:60] if text else f"[media:{media_uid}]"
+    logger.info(
+        f"CROSS-SPAM DETECTED: user={user_id} "
+        f"groups={list(_cross_spam[user_id][key])} content={log_text!r} "
+        f"— keyingi guruhlardan o'chiriladi"
+    )
+    # Spam sifatida belgilaymiz
+    _known_spam[user_id][key] = now
+    # Tracking ni tozalaymiz (endi known_spam boshqaradi)
     _cross_spam[user_id].pop(key, None)
 
-    return True
+    # 1, 2, 3-guruh xabarlari O'CHIRILMAYDI — faqat kuzatildi
+    return False
 
 
 # ── Taqiqlangan rasm tekshiruvi (pHash + segment) ────────────
