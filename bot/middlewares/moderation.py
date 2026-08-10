@@ -10,56 +10,10 @@ from bot.services.image_hash import (
     segment_hashes_from_str, check_segment_match
 )
 from loguru import logger
-import time
-import hashlib
-from collections import defaultdict
 
 # ── Banned images cache ───────────────────────────────────────
 _banned_images_cache: list[dict] = []
 _banned_images_loaded = False
-
-# ── Cross-group spam detection ────────────────────────────────
-# 2 bosqichli tizim:
-#   1. TRACKING: birinchi 3 guruh — yig'ib boriladi, o'chirilmaydi
-#   2. BLOCKING: 3 ta guruh topilgandan keyin — keyingi hamma guruhdan o'chiriladi
-#
-# _cross_spam: kuzatuv (qaysi guruhga yuborganini sanaydi)
-# _known_spam: tasdiqlangan spam — user+key → aniqlangan vaqt
-_cross_spam: dict[int, dict[str, set]] = defaultdict(lambda: defaultdict(set))
-_known_spam: dict[int, dict[str, float]] = defaultdict(dict)  # user_id -> {key: detected_at}
-
-_CROSS_SPAM_WINDOW    = 60      # soniya: tracking oynasi
-_CROSS_SPAM_THRESHOLD = 3       # nechta guruhdan keyin spam belgilanadi
-_KNOWN_SPAM_TTL       = 3600    # spam belgi qancha vaqt saqlanadi (1 soat)
-
-
-def _text_key(text: str) -> str:
-    """Matnni normallashtirb, MD5 hash oladi — bir xil xabarlarni aniqlash uchun."""
-    normalized = " ".join(text.lower().split())
-    return hashlib.md5(normalized.encode()).hexdigest()
-
-
-def _make_content_key(text: str, media_uid: str | None) -> str:
-    """Matn + media kombinatsiyasidan yagona kalit."""
-    raw = f"{_text_key(text)}|{media_uid or ''}"
-    return hashlib.md5(raw.encode()).hexdigest()
-
-
-def _cleanup_cross_spam(user_id: int, now: float):
-    """Eski tracking va known_spam yozuvlarini tozalaydi."""
-    # Tracking tozalash: window dan tashqari guruhlarni o'chirishning iloji yo'q
-    # (set da timestamp yo'q), shuning uchun biz butun keyni window dan keyin o'chiramiz.
-    # Oddiy yondashuv: key ga birinchi ko'ringan vaqtni saqlaymiz — lekin bu qimmat.
-    # Hozir known_spam TTL ni tozalaymiz:
-    if user_id in _known_spam:
-        keys_to_del = [
-            k for k, ts in _known_spam[user_id].items()
-            if now - ts > _KNOWN_SPAM_TTL
-        ]
-        for k in keys_to_del:
-            del _known_spam[user_id][k]
-        if not _known_spam[user_id]:
-            del _known_spam[user_id]
 
 
 async def _load_banned_images():
@@ -125,14 +79,6 @@ class BotMiddleware(BaseMiddleware):
                 )
             except Exception:
                 pass
-
-        # ── 3.5. Cross-group spam TRACKING (moderatsiyadan oldin) ─────
-        # Xabar tarkibidan qat'iy nazar: link, matn, caption — hammasi kuzatiladi.
-        # 3+ guruhga bir xil xabar yuborganda — barchasi o'chiriladi.
-        if is_group and bot and event.from_user:
-            cross_deleted = await _check_cross_group_spam(event, bot)
-            if cross_deleted:
-                return  # Spam o'chirildi, keyingi tekshiruvlar shart emas
 
         # ── 4. Guruh moderatsiyasi ────────────────────────────────
         if is_group and bot:
@@ -361,91 +307,6 @@ async def _moderate_group(message: Message, bot: Bot) -> bool:
                 await _delete_msg(message, "BANNED_SET")
             return True
 
-    return False
-
-
-# ── Cross-group spam o'chirish ────────────────────────────────
-
-async def _check_cross_group_spam(message: Message, bot: Bot) -> bool:
-    """
-    2 bosqichli cross-group spam aniqlash:
-
-    BOSQICH 1 — TRACKING (1, 2, 3-guruh):
-      Xabar guruh ro'yxatiga qo'shiladi. O'chirilmaydi.
-      3 ta turli guruhga yuborganda → spam belgilanadi (_known_spam ga yoziladi).
-
-    BOSQICH 2 — BLOCKING (4, 5, 6...guruh):
-      Xuddi shu foydalanuvchi xuddi shu kontentni yana yuborganda
-      darhol o'chiriladi.
-
-    True => xabar o'chirildi (faqat BOSQICH 2 da).
-    """
-    if not message.from_user:
-        return False
-
-    # Kontent kalitini yasash (matn + media)
-    text = (message.text or message.caption or "").strip()
-
-    media_uid = None
-    if message.photo:
-        media_uid = message.photo[-1].file_unique_id
-    elif message.video:
-        media_uid = message.video.file_unique_id
-    elif message.document:
-        media_uid = message.document.file_unique_id
-    elif message.audio:
-        media_uid = message.audio.file_unique_id
-    elif message.sticker:
-        media_uid = message.sticker.file_unique_id
-    elif message.animation:
-        media_uid = message.animation.file_unique_id
-
-    if not text and not media_uid:
-        return False
-
-    key     = _make_content_key(text, media_uid)
-    user_id = message.from_user.id
-    chat_id = message.chat.id
-    msg_id  = message.message_id
-    now     = time.time()
-
-    # Eski ma'lumotlarni tozala
-    _cleanup_cross_spam(user_id, now)
-
-    # ── BOSQICH 2: Allaqachon spam belgilangan? → darhol o'chir ──
-    if user_id in _known_spam and key in _known_spam[user_id]:
-        log_text = text[:60] if text else f"[media:{media_uid}]"
-        logger.info(
-            f"CROSS-SPAM BLOCKED (known): user={user_id} "
-            f"chat={chat_id} msg={msg_id} content={log_text!r}"
-        )
-        try:
-            await bot.delete_message(chat_id, msg_id)
-        except Exception as e:
-            logger.warning(f"cross-spam delete xato: {e}")
-        return True
-
-    # ── BOSQICH 1: Tracking — bu guruhni qo'shib, sanab boramiz ──
-    _cross_spam[user_id][key].add(chat_id)   # set → bir guruh bir marta hisoblanadi
-    unique_count = len(_cross_spam[user_id][key])
-
-    if unique_count < _CROSS_SPAM_THRESHOLD:
-        # Hali spam emas — xabar qoladi
-        return False
-
-    # === SPAM BELGILANDI: endi keyingi guruhlarda o'chiriladi ===
-    log_text = text[:60] if text else f"[media:{media_uid}]"
-    logger.info(
-        f"CROSS-SPAM DETECTED: user={user_id} "
-        f"groups={list(_cross_spam[user_id][key])} content={log_text!r} "
-        f"— keyingi guruhlardan o'chiriladi"
-    )
-    # Spam sifatida belgilaymiz
-    _known_spam[user_id][key] = now
-    # Tracking ni tozalaymiz (endi known_spam boshqaradi)
-    _cross_spam[user_id].pop(key, None)
-
-    # 1, 2, 3-guruh xabarlari O'CHIRILMAYDI — faqat kuzatildi
     return False
 
 
