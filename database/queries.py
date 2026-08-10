@@ -479,3 +479,22 @@ async def get_banned_ocr_texts_list() -> list[str]:
     rows = await pool.fetch("SELECT text FROM banned_ocr_texts")
     return [r['text'] for r in rows]
 
+
+# ──────────────────────── CLEANUP ───────────────────────────
+
+async def delete_user_messages_log(group_id: int, user_id: int) -> int:
+    """
+    Foydalanuvchi banned bo'lganda DB dagi xabar loglarini tozalaydi.
+    Musor to'planmasin!
+    Returns: o'chirilgan yozuvlar soni
+    """
+    pool = await get_pool()
+    result = await pool.execute(
+        "DELETE FROM messages WHERE group_id = $1 AND user_id = $2",
+        group_id, user_id
+    )
+    # result format: 'DELETE 5'
+    try:
+        return int(result.split()[1])
+    except Exception:
+        return 0

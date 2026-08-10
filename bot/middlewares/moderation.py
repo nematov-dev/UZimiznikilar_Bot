@@ -16,6 +16,35 @@ from loguru import logger
 _banned_images_cache: list[dict] = []
 _banned_images_loaded = False
 
+# ── Taqiqlangan media group tracking ─────────────────────────
+# Tuzilma: "{chat_id}_{media_group_id}" → timestamp
+# Album (post) dagi barcha rasmlarni o'chirish uchun
+import time as _time
+_flagged_media_groups: dict[str, float] = {}
+_MEDIA_GROUP_TTL = 30  # soniya
+
+
+def _flag_media_group(chat_id: int, media_group_id: str):
+    """Media groupni taqiqlangan deb belgilaydi."""
+    key = f"{chat_id}_{media_group_id}"
+    _flagged_media_groups[key] = _time.time()
+    # Eski yozuvlarni tozalash
+    now = _time.time()
+    stale = [k for k, ts in _flagged_media_groups.items() if now - ts > _MEDIA_GROUP_TTL]
+    for k in stale:
+        del _flagged_media_groups[k]
+
+
+def _is_flagged_media_group(chat_id: int, media_group_id: str | None) -> bool:
+    """Bu media group taqiqlangan mi?"""
+    if not media_group_id:
+        return False
+    key = f"{chat_id}_{media_group_id}"
+    ts = _flagged_media_groups.get(key)
+    if ts and _time.time() - ts < _MEDIA_GROUP_TTL:
+        return True
+    return False
+
 
 async def _load_banned_images():
     global _banned_images_cache, _banned_images_loaded
@@ -69,7 +98,7 @@ class BotMiddleware(BaseMiddleware):
             except Exception as e:
                 logger.warning(f"upsert_group: {e}")
 
-        # ── 3. Xabar ID ni DB ga yozish (delete uchun kerak) ────────
+        # ── 3. Xabar ID ni DB ga yozish (delete uchun kerak) ────
         if is_group and event.from_user and event.message_id:
             try:
                 await queries.log_message(
@@ -80,6 +109,20 @@ class BotMiddleware(BaseMiddleware):
                 )
             except Exception:
                 pass
+
+        # ── 3.5. Media group taqiqlangan bo'lsa — darhol o'chir ────
+        # Album (post) dagi barcha rasmlarni o'chirish uchun
+        if is_group and bot and event.from_user and event.media_group_id:
+            if _is_flagged_media_group(event.chat.id, event.media_group_id):
+                try:
+                    await bot.delete_message(event.chat.id, event.message_id)
+                    logger.info(
+                        f"MEDIA_GROUP DEL: msg={event.message_id} "
+                        f"group={event.media_group_id} chat={event.chat.id}"
+                    )
+                except Exception:
+                    pass
+                return  # Boshqa tekshiruvlar shart emas
 
         # ── 4. Guruh moderatsiyasi ────────────────────────────────
         if is_group and bot:
@@ -126,42 +169,56 @@ async def _delete_msg(message: Message, reason: str) -> bool:
         return False
 
 
-# ── Yordamchi: foydalanuvchining hamma xabarini o'chirib, restrict qilish ──
+import asyncio
 
 async def _delete_all_and_restrict(bot: Bot, message: Message, reason: str):
     """
-    1. Tetiklovchi xabarni darhol o'chiradi (DB ga bog'liq emas — kafolatlangan).
-    2. Foydalanuvchining guruhdagi qolgan barcha xabarlarini DB dan topib o'chiradi.
-    3. Umrbod yozolmaydigan qilib restrict qiladi.
+    1. Tetiklovchi xabarni darhol o'chiradi.
+    2. Media group bo'lsa — uni taqiqlangan deb belgilaydi (keyingi rasmlar ham o'chiriladi).
+    3. Foydalanuvchining guruhdagi barcha xabarlarini DB dan topib o'chiradi.
+    4. Restrict qiladi.
+    5. Restrict dan keyin 3 soniya kutib DB ni qayta tekshiradi (album rasmlarini ushlash uchun).
     """
+    import asyncio as _asyncio
     chat_id = message.chat.id
     user_id = message.from_user.id
     deleted = 0
 
-    # 1. Joriy xabar — darhol, hech nimaga qaramay
+    # 1. Joriy xabar — darhol
     if await _delete_msg(message, reason.upper()):
         deleted += 1
 
-    # 2. Qolgan eski xabarlar — DB dan
-    try:
-        msg_ids = await queries.get_user_message_ids(chat_id, user_id)
-    except Exception:
-        msg_ids = []
-    msg_ids = [mid for mid in msg_ids if mid != message.message_id]
+    # 2. Media group bo'lsa — flag qilamiz (boshqa rasmlar kelsa ham o'chirilsin)
+    if message.media_group_id:
+        _flag_media_group(chat_id, message.media_group_id)
 
-    for i in range(0, len(msg_ids), 100):
-        batch = msg_ids[i:i + 100]
+    # 3. DB dan barcha eski xabarlarni o'chirish
+    async def _sweep_db(extra_delay: float = 0):
+        nonlocal deleted
+        if extra_delay:
+            await _asyncio.sleep(extra_delay)
         try:
-            if len(batch) == 1:
-                await bot.delete_message(chat_id, batch[0])
-            else:
-                await bot.delete_messages(chat_id, batch)
-            deleted += len(batch)
-        except Exception as e:
-            logger.warning(f"batch delete xato: {e}")
+            msg_ids = await queries.get_user_message_ids(chat_id, user_id)
+        except Exception:
+            return
+        # Joriy xabarni chiqarib tashlaymiz (allaqachon o'chirilgan)
+        msg_ids = [mid for mid in msg_ids if mid != message.message_id]
+        for i in range(0, len(msg_ids), 100):
+            batch = msg_ids[i:i + 100]
+            try:
+                if len(batch) == 1:
+                    await bot.delete_message(chat_id, batch[0])
+                else:
+                    await bot.delete_messages(chat_id, batch)
+                deleted += len(batch)
+            except Exception as e:
+                logger.warning(f"batch delete xato: {e}")
 
+    # Birinchi sweep — darhol
+    await _sweep_db()
     logger.info(f"DELETED {deleted} messages ({reason}): user={user_id} chat={chat_id}")
 
+    # 4. Restrict qilish
     try:
         await bot.restrict_chat_member(
             chat_id=chat_id,
@@ -176,6 +233,10 @@ async def _delete_all_and_restrict(bot: Bot, message: Message, reason: str):
         logger.info(f"RESTRICTED forever ({reason}): user={user_id} chat={chat_id}")
     except Exception as e:
         logger.warning(f"restrict xato: {e}")
+
+    # 5. Ikkinchi sweep — 3 soniyadan keyin (album rasmlarini ushlash)
+    #    Background task sifatida — handler ni bloklamaydi
+    asyncio.create_task(_sweep_db(extra_delay=3.0))
 
 
 # ── Asosiy moderatsiya ────────────────────────────────────────
