@@ -12,6 +12,7 @@ from bot.middlewares.moderation import BotMiddleware
 from bot.handlers import admin_handler, group_commands, group_moderation
 from bot.handlers import scheduled_posts
 from bot.services.moderation import refresh_banned_words_cache
+from bot.services.ocr import refresh_ocr_cache
 from bot.services.scheduler import scheduler_loop
 
 
@@ -19,6 +20,7 @@ async def on_startup(bot: Bot):
     logger.info("Bot ishga tushmoqda...")
     await create_pool()
     await refresh_banned_words_cache()
+    await refresh_ocr_cache()
     info = await bot.get_me()
     logger.info(f"Bot ishga tushdi: @{info.username}")
     # Kunlik scheduler

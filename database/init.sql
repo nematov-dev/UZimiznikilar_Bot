@@ -140,3 +140,13 @@ CREATE TABLE daily_stats (
     deleted_messages INTEGER DEFAULT 0,
     bans_count INTEGER DEFAULT 0
 );
+
+-- ── BANNED OCR TEXTS ──────────────────────────────────────────
+CREATE TABLE IF NOT EXISTS banned_ocr_texts (
+    id BIGSERIAL PRIMARY KEY,
+    text TEXT UNIQUE NOT NULL,
+    added_by BIGINT,
+    created_at TIMESTAMPTZ DEFAULT NOW()
+);
+CREATE INDEX idx_banned_ocr_texts_text ON banned_ocr_texts(text);
+

@@ -45,6 +45,10 @@ class BroadcastState(StatesGroup):
     message = State()
     target = State()
 
+class OcrTextState(StatesGroup):
+    add = State()
+    delete = State()
+
 
 # ── Klaviaturalar ─────────────────────────────────────────────
 
@@ -53,7 +57,7 @@ def admin_menu() -> ReplyKeyboardMarkup:
     b.row(KeyboardButton(text="📊 Statistika"), KeyboardButton(text="🚫 Taqiqlangan so'zlar"))
     b.row(KeyboardButton(text="🏘️ Guruhlar"), KeyboardButton(text="📢 Xabar yuborish"))
     b.row(KeyboardButton(text="📅 Rejalashtirilgan xabarlar"), KeyboardButton(text="🖼 Taqiqlangan rasmlar"))
-    b.row(KeyboardButton(text="👤 Adminlar boshqaruvi"))
+    b.row(KeyboardButton(text="📝 Rasm matni (OCR)"), KeyboardButton(text="👤 Adminlar boshqaruvi"))
     return b.as_markup(resize_keyboard=True)
 
 def cancel_kb() -> ReplyKeyboardMarkup:
@@ -808,6 +812,166 @@ async def bi_clear_confirm(cb: CallbackQuery):
     await pool.execute("DELETE FROM banned_images")
     await invalidate_banned_hashes_cache()
     await cb.message.edit_text("Barcha taqiqlangan rasmlar o'chirildi.")
+    await cb.answer()
+
+
+# ── 📝 Rasm matni (OCR) ───────────────────────────────────────
+
+def _ocr_menu_kb() -> InlineKeyboardMarkup:
+    b = InlineKeyboardBuilder()
+    b.row(
+        InlineKeyboardButton(text="➕ Qo'shish", callback_data="ocr_add"),
+        InlineKeyboardButton(text="🗑 O'chirish", callback_data="ocr_del"),
+    )
+    b.row(InlineKeyboardButton(text="🔄 Yangilash", callback_data="ocr_refresh"))
+    return b.as_markup()
+
+
+def _ocr_list_text(items: list) -> str:
+    count = len(items)
+    text = f"📝 <b>Taqiqlangan rasm matnlari (OCR)</b> ({count} ta)\n\n"
+    text += "ℹ️ Rasm ichida shu matn bo'lsa — bot o'chiradi + taqiqlaydi.\n\n"
+    if items:
+        for i, row in enumerate(items[:50], 1):
+            text += f"{i}. <code>{row['text']}</code>\n"
+        if count > 50:
+            text += f"... va yana {count - 50} ta"
+    else:
+        text += "Ro'yxat bo'sh.\n\nQo'shish uchun ➕ Qo'shish tugmasini bosing."
+    return text
+
+
+@router.message(F.text == "📝 Rasm matni (OCR)")
+async def ocr_menu(message: Message, state: FSMContext):
+    if not await is_bot_admin(message.from_user.id):
+        return
+    await state.clear()
+    items = await queries.get_banned_ocr_texts()
+    await message.answer(
+        _ocr_list_text(items), parse_mode="HTML", reply_markup=_ocr_menu_kb()
+    )
+
+
+@router.callback_query(F.data == "ocr_refresh")
+async def ocr_refresh(cb: CallbackQuery):
+    if not await is_bot_admin(cb.from_user.id):
+        return await cb.answer("Ruxsat yo'q")
+    from bot.services.ocr import refresh_ocr_cache
+    await refresh_ocr_cache()
+    items = await queries.get_banned_ocr_texts()
+    await cb.message.edit_text(
+        _ocr_list_text(items), parse_mode="HTML", reply_markup=_ocr_menu_kb()
+    )
+    await cb.answer("Yangilandi")
+
+
+@router.callback_query(F.data == "ocr_add")
+async def ocr_add_start(cb: CallbackQuery, state: FSMContext):
+    if not await is_bot_admin(cb.from_user.id):
+        return await cb.answer("Ruxsat yo'q")
+    await state.set_state(OcrTextState.add)
+    await cb.message.answer(
+        "📝 <b>Taqiqlangan rasm matni qo'shish</b>\n\n"
+        "Misol: <code>reklama.uz</code> yoki <code>+998901234567</code>\n"
+        "Har biri yangi qatorda yozishingiz mumkin.",
+        parse_mode="HTML",
+        reply_markup=cancel_kb()
+    )
+    await cb.answer()
+
+
+@router.message(OcrTextState.add)
+async def ocr_add_receive(message: Message, state: FSMContext):
+    if message.text == "❌ Bekor":
+        await state.clear()
+        return await message.answer("Bekor qilindi.", reply_markup=admin_menu())
+
+    lines = [ln.strip().lower() for ln in message.text.splitlines() if ln.strip()]
+    added, skipped = [], []
+    for ln in lines:
+        ok = await queries.add_banned_ocr_text(ln, message.from_user.id)
+        (added if ok else skipped).append(ln)
+
+    if added:
+        from bot.services.ocr import refresh_ocr_cache
+        await refresh_ocr_cache()
+
+    await state.clear()
+    parts = []
+    if added:
+        parts.append("✅ Qo'shildi:\n" + "\n".join(f"• <code>{t}</code>" for t in added))
+    if skipped:
+        parts.append("⚠️ Allaqachon bor:\n" + "\n".join(f"• <code>{t}</code>" for t in skipped))
+    await message.answer(
+        "\n\n".join(parts) or "Hech narsa qo'shilmadi.",
+        parse_mode="HTML", reply_markup=admin_menu()
+    )
+    items = await queries.get_banned_ocr_texts()
+    await message.answer(_ocr_list_text(items), parse_mode="HTML", reply_markup=_ocr_menu_kb())
+
+
+@router.callback_query(F.data == "ocr_del")
+async def ocr_del_start(cb: CallbackQuery, state: FSMContext):
+    if not await is_bot_admin(cb.from_user.id):
+        return await cb.answer("Ruxsat yo'q")
+    await state.set_state(OcrTextState.delete)
+    await cb.message.answer(
+        "O'chirmoqchi bo'lgan matnni yozing — bot topib ko'rsatadi:",
+        reply_markup=cancel_kb()
+    )
+    await cb.answer()
+
+
+@router.message(OcrTextState.delete)
+async def ocr_del_search(message: Message, state: FSMContext):
+    if message.text == "❌ Bekor":
+        await state.clear()
+        return await message.answer("Bekor.", reply_markup=admin_menu())
+
+    q = message.text.strip().lower()
+    items = await queries.get_banned_ocr_texts()
+    found = [row for row in items if q in row["text"]]
+
+    if not found:
+        return await message.answer(
+            f"❌ <b>«{q}»</b> topilmadi. Qayta yozing.", parse_mode="HTML"
+        )
+
+    await state.clear()
+    b = InlineKeyboardBuilder()
+    text = f"🔍 «{q}» bo'yicha topildi:\n\n"
+    for row in found[:10]:
+        text += f"• <code>{row['text']}</code>\n"
+        b.row(InlineKeyboardButton(
+            text=f"🗑 {row['text'][:30]}",
+            callback_data=f"ocrdel:{row['id']}"
+        ))
+    b.row(InlineKeyboardButton(text="❌ Bekor", callback_data="ocrdel_cancel"))
+    await message.answer(text, parse_mode="HTML", reply_markup=b.as_markup())
+
+
+@router.callback_query(F.data.startswith("ocrdel:"))
+async def ocr_del_confirm(cb: CallbackQuery):
+    if not await is_bot_admin(cb.from_user.id):
+        return await cb.answer("Ruxsat yo'q")
+    item_id = int(cb.data.split(":")[1])
+    ok = await queries.remove_banned_ocr_text(item_id)
+    if ok:
+        from bot.services.ocr import refresh_ocr_cache
+        await refresh_ocr_cache()
+        await cb.message.edit_text("✅ O'chirildi.")
+    else:
+        await cb.message.edit_text("❌ Topilmadi.")
+    items = await queries.get_banned_ocr_texts()
+    await cb.message.answer(
+        _ocr_list_text(items), parse_mode="HTML", reply_markup=_ocr_menu_kb()
+    )
+    await cb.answer()
+
+
+@router.callback_query(F.data == "ocrdel_cancel")
+async def ocr_del_cancel(cb: CallbackQuery):
+    await cb.message.edit_text("Bekor qilindi.")
     await cb.answer()
 
 

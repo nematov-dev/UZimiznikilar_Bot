@@ -9,6 +9,7 @@ from bot.services.image_hash import (
     PHASH_THRESHOLD, SEGMENT_THRESHOLD, MIN_SEGMENT_MATCHES,
     segment_hashes_from_str, check_segment_match
 )
+from bot.services.ocr import check_ocr_banned, is_ocr_available
 from loguru import logger
 
 # ── Banned images cache ───────────────────────────────────────
@@ -293,6 +294,18 @@ async def _moderate_group(message: Message, bot: Bot) -> bool:
                 await _delete_msg(message, "BANNED_IMAGE")
             return True
 
+    # ── D2. OCR: rasmdagi taqiqlangan matn ────────────────────────
+    if message.photo and is_ocr_available():
+        ocr_result = await _check_ocr_text(message, bot)
+        if ocr_result:
+            uid = message.from_user.id if message.from_user else None
+            logger.info(f"OCR BANNED TEXT IN IMAGE: user={uid} chat={message.chat.id}")
+            if uid:
+                await _delete_all_and_restrict(bot, message, "ocr_banned_text")
+            else:
+                await _delete_msg(message, "OCR_BANNED")
+            return True
+
     # ── E. Taqiqlangan stiker to'plami (18+ va h.k.) ──────────────────
     anti_nsfw = group.get("anti_nsfw", True)
     if anti_nsfw and message.sticker and message.sticker.set_name:
@@ -312,11 +325,11 @@ async def _moderate_group(message: Message, bot: Bot) -> bool:
 
 # ── Taqiqlangan rasm tekshiruvi (pHash + segment) ────────────
 
-# Sezgirlik sozlamalari (noto'g'ri bloklashni kamaytirish uchun)
-# PHASH_THRESHOLD — import qilinadi (image_hash.py dan)
-# Segment uchun: ko'proq segment mos kelishi shart
-_LOCAL_SEGMENT_THRESHOLD = 4    # (image_hash.py dagi 6 dan qattiqroq)
-_LOCAL_MIN_SEGMENT_MATCHES = 4  # (image_hash.py dagi 2 dan ko'proq mos kelishi kerak)
+# Sezgirlik sozlamalari
+# PHASH_THRESHOLD (15) — import orqali ishlatiladi (butun rasm)
+# Segment: false positive kamaytirish uchun muvozanatli sozlamalar
+_LOCAL_SEGMENT_THRESHOLD = 8    # har bir segment uchun (15 dan pastroq)
+_LOCAL_MIN_SEGMENT_MATCHES = 3  # 16 ta segmentdan 3 tasi mos kelsa yetarli
 
 
 async def _check_banned_image(message: Message, bot: Bot) -> bool:
@@ -383,3 +396,32 @@ async def _check_banned_image(message: Message, bot: Bot) -> bool:
                 return True
 
     return False
+
+
+# ── OCR: rasmdagi matn tekshiruvi ────────────────────────────
+
+async def _check_ocr_text(message: Message, bot: Bot) -> bool:
+    """
+    Rasmdan matn o'qib, taqiqlangan OCR matnlar bilan solishtiradi.
+    True => taqiqlangan matn topildi.
+    """
+    try:
+        photo = message.photo[-1]
+        tg_file = await bot.get_file(photo.file_id)
+        # 5MB dan katta rasmlarni OCR qilmaymiz (sekin bo'ladi)
+        if tg_file.file_size and tg_file.file_size > 5 * 1024 * 1024:
+            return False
+        buf = await bot.download_file(tg_file.file_path)
+        image_bytes = buf.read() if hasattr(buf, "read") else bytes(buf)
+    except Exception as e:
+        logger.warning(f"Rasm yuklab olishda xato (OCR check): {e}")
+        return False
+
+    found, banned_text = await check_ocr_banned(image_bytes)
+    if found:
+        uid = message.from_user.id if message.from_user else "?"
+        logger.info(
+            f"OCR BANNED: '{banned_text}' topildi | "
+            f"chat={message.chat.id} user={uid}"
+        )
+    return found

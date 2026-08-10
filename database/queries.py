@@ -445,3 +445,37 @@ async def get_stats_overview() -> dict:
         "deleted_today": msgs["deleted"],
         "admin_actions_today": actions["total"],
     }
+
+
+# ─────────────────────────── BANNED OCR TEXTS ────────────────
+
+async def get_banned_ocr_texts() -> list:
+    pool = await get_pool()
+    rows = await pool.fetch("SELECT * FROM banned_ocr_texts ORDER BY created_at DESC")
+    return [dict(r) for r in rows]
+
+
+async def add_banned_ocr_text(text: str, added_by: int = None) -> bool:
+    pool = await get_pool()
+    try:
+        await pool.execute(
+            "INSERT INTO banned_ocr_texts(text, added_by) VALUES($1, $2)",
+            text.strip().lower(), added_by
+        )
+        return True
+    except Exception:
+        return False
+
+
+async def remove_banned_ocr_text(text_id: int) -> bool:
+    pool = await get_pool()
+    result = await pool.execute("DELETE FROM banned_ocr_texts WHERE id=$1", text_id)
+    return result == "DELETE 1"
+
+
+async def get_banned_ocr_texts_list() -> list[str]:
+    """Faqat matn ro'yxati — moderatsiya uchun tez yuklash."""
+    pool = await get_pool()
+    rows = await pool.fetch("SELECT text FROM banned_ocr_texts")
+    return [r['text'] for r in rows]
+

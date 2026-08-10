@@ -13,8 +13,8 @@ import json
 from io import BytesIO
 from loguru import logger
 
-PHASH_THRESHOLD = 8        # Butun rasm uchun Hamming masofasi (<= shu = bir xil)
-SEGMENT_THRESHOLD = 6      # Segment uchun (qattiqroq)
+PHASH_THRESHOLD = 15       # Butun rasm uchun Hamming masofasi (oshirildi: siqilgan/rangi o'zgargan/o'lcham o'zgargan uchun)
+SEGMENT_THRESHOLD = 10     # Segment uchun — kesib yuborilgan qismlarni topish uchun yumshoqroq
 MIN_SEGMENT_MATCHES = 2    # Kamida shu qancha segment mos kelsa → topilgan
 
 
@@ -53,10 +53,11 @@ def phash_distance(hash1: str, hash2: str) -> int:
 
 # ── Segment hashes (3x3 grid) ─────────────────────────────────
 
-def compute_segment_hashes(image_bytes: bytes, grid: int = 3) -> list[str]:
+def compute_segment_hashes(image_bytes: bytes, grid: int = 4) -> list[str]:
     """
     Rasmni grid x grid bo'lakka bo'lib, har birining pHash ni qaytaradi.
     Kesilgan yoki atrofiga narsa qo'shilgan rasmlarni aniqlash uchun ishlatiladi.
+    grid=4 → 16 ta segment (avval 3x3=9 edi) — mayda kesimlarni ham topadi.
     """
     try:
         import imagehash
