@@ -1,7 +1,7 @@
 """Middleware: ro'yxatga olish + to'liq moderatsiya (outer)."""
 from typing import Callable, Dict, Any, Awaitable
 from aiogram import BaseMiddleware, Bot
-from aiogram.types import Message, TelegramObject, ChatPermissions
+from aiogram.types import Message, TelegramObject
 from database import queries
 from bot.services.moderation import check_message
 from bot.services.image_hash import (
@@ -171,13 +171,13 @@ async def _delete_msg(message: Message, reason: str) -> bool:
 
 import asyncio
 
-async def _delete_all_and_restrict(bot: Bot, message: Message, reason: str):
+async def _delete_all_and_ban(bot: Bot, message: Message, reason: str):
     """
     1. Tetiklovchi xabarni darhol o'chiradi.
-    2. Media group bo'lsa — uni taqiqlangan deb belgilaydi (keyingi rasmlar ham o'chiriladi).
-    3. Foydalanuvchining guruhdagi barcha xabarlarini DB dan topib o'chiradi.
-    4. Restrict qiladi.
-    5. Restrict dan keyin 3 soniya kutib DB ni qayta tekshiradi (album rasmlarini ushlash uchun).
+    2. Media group bo'lsa — flag qiladi (keyingi rasmlar ham o'chirilsin).
+    3. DB dan barcha eski xabarlarni o'chiradi.
+    4. Guruhdan BAN qiladi.
+    5. 3 soniyadan keyin DB ni qayta tozalaydi.
     """
     import asyncio as _asyncio
     chat_id = message.chat.id
@@ -290,7 +290,7 @@ async def _moderate_group(message: Message, bot: Bot) -> bool:
             uid = message.from_user.id if message.from_user else None
             logger.info(f"BANNED CONTACT: phone={digits} user={uid} chat={message.chat.id}")
             if uid:
-                await _delete_all_and_restrict(bot, message, "banned_contact")
+                await _delete_all_and_ban(bot, message, "banned_contact")
             else:
                 await _delete_msg(message, "BANNED_CONTACT")
             return True
@@ -303,7 +303,7 @@ async def _moderate_group(message: Message, bot: Bot) -> bool:
             uid = message.from_user.id if message.from_user else None
             logger.info(f"APK FILE: name={fname!r} user={uid} chat={message.chat.id}")
             if uid:
-                await _delete_all_and_restrict(bot, message, "apk_file")
+                await _delete_all_and_ban(bot, message, "apk_file")
             else:
                 await _delete_msg(message, "APK_FILE")
             return True
@@ -322,7 +322,7 @@ async def _moderate_group(message: Message, bot: Bot) -> bool:
             await _delete_msg(message, "LINK")
             return True
 
-        # @username reklama — faqat o'chirish, restrict YO'Q
+        # @username reklama — faqat o'chirish
         if result.get("has_username_ad") and group["anti_links"]:
             uid = message.from_user.id if message.from_user else "?"
             logger.info(
@@ -337,36 +337,39 @@ async def _moderate_group(message: Message, bot: Bot) -> bool:
             uid = message.from_user.id if message.from_user else None
             logger.info(f"PROFANITY: word={word!r} user={uid} chat={message.chat.id}")
             if uid:
-                await _delete_all_and_restrict(bot, message, "profanity")
+                await _delete_all_and_ban(bot, message, "profanity")
             else:
                 await _delete_msg(message, "PROFANITY")
             return True
 
-    # ── D. Taqiqlangan rasm tekshiruvi (pHash) ────────────────────
-    # media_group bo'lsa ham (bir nechta rasm), butun xabar o'chiriladi
-    if message.photo and is_imagehash_available():
-        banned = await _check_banned_image(message, bot)
-        if banned:
-            uid = message.from_user.id if message.from_user else None
-            logger.info(f"BANNED IMAGE: user={uid} chat={message.chat.id}")
-            if uid:
-                # Butun xabarni + barcha eski xabarlarni o'chiradi va restrict qo'yadi
-                await _delete_all_and_restrict(bot, message, "banned_image")
-            else:
-                await _delete_msg(message, "BANNED_IMAGE")
-            return True
+    # ── D. Taqiqlangan rasm + OCR tekshiruvi ───────────────────────
+    # Rasm 1 MARTA yuklanadi, pHash va OCR ga beriladi
+    if message.photo:
+        image_bytes = await _download_photo(message, bot)
+        if image_bytes:
+            # D1. pHash tekshiruvi
+            if is_imagehash_available():
+                banned = await _check_banned_image_bytes(image_bytes, message)
+                if banned:
+                    uid = message.from_user.id if message.from_user else None
+                    logger.info(f"BANNED IMAGE: user={uid} chat={message.chat.id}")
+                    if uid:
+                        await _delete_all_and_ban(bot, message, "banned_image")
+                    else:
+                        await _delete_msg(message, "BANNED_IMAGE")
+                    return True
 
-    # ── D2. OCR: rasmdagi taqiqlangan matn ────────────────────────
-    if message.photo and is_ocr_available():
-        ocr_result = await _check_ocr_text(message, bot)
-        if ocr_result:
-            uid = message.from_user.id if message.from_user else None
-            logger.info(f"OCR BANNED TEXT IN IMAGE: user={uid} chat={message.chat.id}")
-            if uid:
-                await _delete_all_and_restrict(bot, message, "ocr_banned_text")
-            else:
-                await _delete_msg(message, "OCR_BANNED")
-            return True
+            # D2. OCR tekshiruvi
+            if is_ocr_available():
+                found, banned_text = await check_ocr_banned(image_bytes)
+                if found:
+                    uid = message.from_user.id if message.from_user else None
+                    logger.info(f"OCR BANNED: '{banned_text}' | chat={message.chat.id} user={uid}")
+                    if uid:
+                        await _delete_all_and_ban(bot, message, "ocr_banned_text")
+                    else:
+                        await _delete_msg(message, "OCR_BANNED")
+                    return True
 
     # ── E. Taqiqlangan stiker to'plami (18+ va h.k.) ──────────────────
     anti_nsfw = group.get("anti_nsfw", True)
@@ -377,7 +380,7 @@ async def _moderate_group(message: Message, bot: Bot) -> bool:
             uid = message.from_user.id if message.from_user else None
             logger.info(f"BANNED STICKER SET: {set_name} user={uid} chat={message.chat.id}")
             if uid:
-                await _delete_all_and_restrict(bot, message, "banned_sticker")
+                await _delete_all_and_ban(bot, message, "banned_sticker")
             else:
                 await _delete_msg(message, "BANNED_SET")
             return True
@@ -385,26 +388,30 @@ async def _moderate_group(message: Message, bot: Bot) -> bool:
     return False
 
 
+# ── Yordamchi: rasmni yuklab olish (1 marta) ─────────────────
+
+async def _download_photo(message: Message, bot: Bot) -> bytes | None:
+    """Rasmni Telegram dan 1 marta yuklab oladi."""
+    try:
+        photo = message.photo[-1]
+        tg_file = await bot.get_file(photo.file_id)
+        if tg_file.file_size and tg_file.file_size > 10 * 1024 * 1024:
+            return None
+        buf = await bot.download_file(tg_file.file_path)
+        return buf.read() if hasattr(buf, "read") else bytes(buf)
+    except Exception as e:
+        logger.warning(f"Rasm yuklab olishda xato: {e}")
+        return None
+
+
 # ── Taqiqlangan rasm tekshiruvi (pHash + segment) ────────────
 
-# Sezgirlik sozlamalari
-# PHASH_THRESHOLD (15) — import orqali ishlatiladi (butun rasm)
-# Segment: false positive kamaytirish uchun muvozanatli sozlamalar
-_LOCAL_SEGMENT_THRESHOLD = 8    # har bir segment uchun (15 dan pastroq)
-_LOCAL_MIN_SEGMENT_MATCHES = 3  # 16 ta segmentdan 3 tasi mos kelsa yetarli
+_LOCAL_SEGMENT_THRESHOLD = 8
+_LOCAL_MIN_SEGMENT_MATCHES = 3
 
 
-async def _check_banned_image(message: Message, bot: Bot) -> bool:
-    """
-    pHash (tez) + segment hash (kesish/screenshot) tekshiruvi.
-    True => taqiqlangan rasm.
-
-    Sezgirlik:
-      - pHash: <= PHASH_THRESHOLD (8) => bir xil rasm
-      - Segment: kamida _LOCAL_MIN_SEGMENT_MATCHES (4) ta segment
-        _LOCAL_SEGMENT_THRESHOLD (4) masofasida mos kelsa => topildi
-        (bu noto'g'ri bloklashni sezilarli kamaytiradi)
-    """
+async def _check_banned_image_bytes(image_bytes: bytes, message: Message) -> bool:
+    """pHash + segment hash tekshiruvi (rasmni qayta yuklamasdan)."""
     global _banned_images_cache, _banned_images_loaded
 
     if not _banned_images_loaded:
@@ -413,18 +420,6 @@ async def _check_banned_image(message: Message, bot: Bot) -> bool:
     if not _banned_images_cache:
         return False
 
-    try:
-        photo = message.photo[-1]
-        tg_file = await bot.get_file(photo.file_id)
-        if tg_file.file_size and tg_file.file_size > 10 * 1024 * 1024:
-            return False
-        buf = await bot.download_file(tg_file.file_path)
-        image_bytes = buf.read() if hasattr(buf, "read") else bytes(buf)
-    except Exception as e:
-        logger.warning(f"Rasm yuklab olishda xato (banned check): {e}")
-        return False
-
-    # Kelayotgan rasmning pHash + segmentlari
     incoming_phash, incoming_segments = await compute_all_hashes_async(image_bytes)
     if not incoming_phash:
         return False
@@ -435,55 +430,18 @@ async def _check_banned_image(message: Message, bot: Bot) -> bool:
         banned_phash = entry["phash"]
         banned_segs = segment_hashes_from_str(entry.get("segment_hashes") or "")
 
-        # 1. Tez tekshiruv: butun rasm pHash (asosiy, eng aniq)
         dist = phash_distance(incoming_phash, banned_phash)
         if dist <= PHASH_THRESHOLD:
-            logger.info(
-                f"BANNED IMAGE (phash dist={dist}): chat={message.chat.id} user={uid}"
-            )
+            logger.info(f"BANNED IMAGE (phash dist={dist}): chat={message.chat.id} user={uid}")
             return True
 
-        # 2. Segment tekshiruv: faqat aniq kesish/screenshot uchun
-        #    Noto'g'ri bloklashni kamaytirish uchun qattiqroq sozlamalar
         if banned_segs and incoming_segments:
             if check_segment_match(
-                incoming_segments,
-                banned_segs,
+                incoming_segments, banned_segs,
                 threshold=_LOCAL_SEGMENT_THRESHOLD,
                 min_matches=_LOCAL_MIN_SEGMENT_MATCHES,
             ):
-                logger.info(
-                    f"BANNED IMAGE (segment match): chat={message.chat.id} user={uid}"
-                )
+                logger.info(f"BANNED IMAGE (segment): chat={message.chat.id} user={uid}")
                 return True
 
     return False
-
-
-# ── OCR: rasmdagi matn tekshiruvi ────────────────────────────
-
-async def _check_ocr_text(message: Message, bot: Bot) -> bool:
-    """
-    Rasmdan matn o'qib, taqiqlangan OCR matnlar bilan solishtiradi.
-    True => taqiqlangan matn topildi.
-    """
-    try:
-        photo = message.photo[-1]
-        tg_file = await bot.get_file(photo.file_id)
-        # 5MB dan katta rasmlarni OCR qilmaymiz (sekin bo'ladi)
-        if tg_file.file_size and tg_file.file_size > 5 * 1024 * 1024:
-            return False
-        buf = await bot.download_file(tg_file.file_path)
-        image_bytes = buf.read() if hasattr(buf, "read") else bytes(buf)
-    except Exception as e:
-        logger.warning(f"Rasm yuklab olishda xato (OCR check): {e}")
-        return False
-
-    found, banned_text = await check_ocr_banned(image_bytes)
-    if found:
-        uid = message.from_user.id if message.from_user else "?"
-        logger.info(
-            f"OCR BANNED: '{banned_text}' topildi | "
-            f"chat={message.chat.id} user={uid}"
-        )
-    return found
