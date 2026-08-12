@@ -1,28 +1,25 @@
 """
-OCR (Optical Character Recognition) — rasmdagi matnni o'qish.
+OCR — rasmdagi matnni o'qish (pytesseract).
 
-Optimallashtirilgan: 1 ta PSM, semaphore (max 2 parallel), timeout.
-VPS da o'rnatish:
-    sudo apt install tesseract-ocr tesseract-ocr-uzb tesseract-ocr-rus tesseract-ocr-eng
-    pip install pytesseract
+MUHIM: pytesseract timeout parametri orqali tesseract jarayoni o'ldiriladi.
+asyncio.wait_for ISHLATILMAYDI — u faqat Python ni to'xtatadi,
+tesseract subprocess zombie bo'lib qoladi.
 """
 import asyncio
 import re
 from io import BytesIO
 from loguru import logger
 
-# Taqiqlangan OCR matnlar cache
+# Cache
 _ocr_banned: list[str] = []
 _ocr_loaded: bool = False
-
-# Tesseract mavjudligi — bir marta tekshiriladi
 _tesseract_ok: bool | None = None
 
-# Bir vaqtda maksimal 2 ta OCR jarayoni (server tiqilmasin)
-_ocr_semaphore = asyncio.Semaphore(2)
+# Bir vaqtda MAX 1 ta OCR (server yukini kamaytirish)
+_ocr_semaphore = asyncio.Semaphore(1)
 
-# OCR timeout (soniya) — bu vaqtdan ko'p kutilmaydi
-_OCR_TIMEOUT = 10.0
+# Tesseract timeout — JARAYONNI O'LDIRADI (zombie bo'lmaydi)
+_TESSERACT_TIMEOUT = 8  # soniya
 
 
 def is_ocr_available() -> bool:
@@ -44,18 +41,17 @@ def _check_tesseract() -> bool:
         _tesseract_ok = True
     except Exception:
         _tesseract_ok = False
-        logger.warning("Tesseract topilmadi! sudo apt install tesseract-ocr")
+        logger.warning("Tesseract topilmadi!")
     return _tesseract_ok
 
 
 async def refresh_ocr_cache():
-    """DB dan taqiqlangan OCR matnlarni qayta yuklaydi."""
     global _ocr_banned, _ocr_loaded
     try:
         from database import queries
         _ocr_banned = await queries.get_banned_ocr_texts_list()
         _ocr_loaded = True
-        logger.info(f"OCR cache yangilandi: {len(_ocr_banned)} ta taqiqlangan matn")
+        logger.info(f"OCR cache: {len(_ocr_banned)} ta taqiqlangan matn")
     except Exception as e:
         logger.warning(f"OCR cache yuklanmadi: {e}")
         _ocr_loaded = True
@@ -68,43 +64,50 @@ async def get_ocr_banned() -> list[str]:
     return _ocr_banned
 
 
-# ── Rasm preprocessing ────────────────────────────────────────
+# ── Preprocessing (yengil) ────────────────────────────────────
 
-def _preprocess_image(img):
-    """Grayscale + kontrast — OCR aniqligini oshiradi."""
-    from PIL import ImageEnhance
+def _preprocess(img):
+    """Grayscale + kontrast. Rasmni 600px ga kichraytirish — tez OCR."""
+    from PIL import Image, ImageEnhance
 
-    img = img.convert("L")  # Grayscale
+    img = img.convert("L")
 
-    # Kichik rasmlarni kattalashtirish
+    # KICHRAYTIRISH — 600px max (tez OCR, kam CPU)
     w, h = img.size
-    if w < 800:
-        scale = 800 / w
-        from PIL import Image
-        img = img.resize((int(w * scale), int(h * scale)), Image.LANCZOS)
+    max_side = 600
+    if w > max_side or h > max_side:
+        ratio = max_side / max(w, h)
+        img = img.resize((int(w * ratio), int(h * ratio)), Image.LANCZOS)
 
-    # Kontrast oshirish
-    img = ImageEnhance.Contrast(img).enhance(2.0)
+    img = ImageEnhance.Contrast(img).enhance(1.8)
     return img
 
 
 def _extract_text_sync(image_bytes: bytes) -> str:
     """
-    Rasmdan matnni sinxron o'qiydi.
-    Faqat 1 ta PSM mode — server yukini kamaytiradi.
+    Rasmdan matn o'qish.
+    pytesseract.timeout — tesseract jarayonini o'ldiradi (zombie bo'lmaydi).
     """
     try:
         import pytesseract
         from PIL import Image
 
         img = Image.open(BytesIO(image_bytes)).convert("RGB")
-        img = _preprocess_image(img)
+        img = _preprocess(img)
 
-        # PSM 11: Sparse text — reklama postlaridagi turli joylardagi matnni topadi
-        config = "--oem 3 --psm 11"
-        text = pytesseract.image_to_string(img, lang="uzb+rus+eng", config=config)
+        # timeout parametri — JARAYONNI O'LDIRADI
+        text = pytesseract.image_to_string(
+            img,
+            lang="uzb+rus+eng",
+            config="--oem 3 --psm 11",
+            timeout=_TESSERACT_TIMEOUT,
+        )
         return text.strip()
 
+    except RuntimeError as e:
+        # pytesseract timeout xatosi
+        logger.warning(f"OCR timeout ({_TESSERACT_TIMEOUT}s): {e}")
+        return ""
     except Exception as e:
         logger.debug(f"OCR xato: {e}")
         return ""
@@ -113,18 +116,12 @@ def _extract_text_sync(image_bytes: bytes) -> str:
 # ── Normalizatsiya ────────────────────────────────────────────
 
 def _normalize(text: str) -> str:
-    text = text.lower()
-    text = re.sub(r"\s+", " ", text)
-    return text.strip()
-
+    return re.sub(r"\s+", " ", text.lower()).strip()
 
 def _digits_only(text: str) -> str:
-    """Faqat raqamlar — telefon raqamlar uchun."""
     return re.sub(r"\D", "", text)
 
-
 def _alphanum_only(text: str) -> str:
-    """Faqat harf+raqam — URL/domain uchun."""
     return re.sub(r"[^a-z0-9\u0400-\u04ff]", "", text.lower())
 
 
@@ -133,8 +130,7 @@ def _alphanum_only(text: str) -> str:
 async def check_ocr_banned(image_bytes: bytes) -> tuple[bool, str]:
     """
     Rasmdagi matnni o'qib, taqiqlangan so'zlar bilan solishtiradi.
-    Semaphore orqali server yukini cheklaydi (max 2 parallel).
-    Timeout: 10 soniya.
+    MAX 1 ta parallel OCR. Tesseract timeout orqali zombie oldini oladi.
     """
     if not is_ocr_available() or not _check_tesseract():
         return False, ""
@@ -143,47 +139,48 @@ async def check_ocr_banned(image_bytes: bytes) -> tuple[bool, str]:
     if not banned_list:
         return False, ""
 
-    # Semaphore: bir vaqtda max 2 ta OCR
-    async with _ocr_semaphore:
-        try:
-            loop = asyncio.get_event_loop()
-            raw_text = await asyncio.wait_for(
-                loop.run_in_executor(None, _extract_text_sync, image_bytes),
-                timeout=_OCR_TIMEOUT
-            )
-        except asyncio.TimeoutError:
-            logger.warning("OCR timeout (10s) — rasm o'tkazib yuborildi")
-            return False, ""
-        except Exception as e:
-            logger.debug(f"OCR executor xato: {e}")
-            return False, ""
+    # Katta rasmlarni OCR qilmaymiz (2MB dan katta)
+    if len(image_bytes) > 2 * 1024 * 1024:
+        return False, ""
+
+    # Max 1 ta parallel OCR — server tiqilmasin
+    try:
+        async with asyncio.timeout(15):  # umumiy kutish limiti
+            async with _ocr_semaphore:
+                loop = asyncio.get_event_loop()
+                raw_text = await loop.run_in_executor(
+                    None, _extract_text_sync, image_bytes
+                )
+    except TimeoutError:
+        logger.warning("OCR semaphore timeout — o'tkazib yuborildi")
+        return False, ""
+    except Exception as e:
+        logger.debug(f"OCR xato: {e}")
+        return False, ""
 
     if not raw_text:
         return False, ""
 
-    logger.info(f"OCR natija ({len(raw_text)} belgi): {raw_text[:150]!r}")
+    logger.info(f"OCR ({len(raw_text)} belgi): {raw_text[:100]!r}")
 
-    text_norm    = _normalize(raw_text)
-    text_digits  = _digits_only(raw_text)
+    text_norm = _normalize(raw_text)
+    text_digits = _digits_only(raw_text)
     text_alphnum = _alphanum_only(raw_text)
 
     for banned in banned_list:
-        banned_norm    = _normalize(banned)
-        banned_digits  = _digits_only(banned)
-        banned_alphnum = _alphanum_only(banned)
+        b_norm = _normalize(banned)
+        b_digits = _digits_only(banned)
+        b_alphnum = _alphanum_only(banned)
 
-        # 1. To'liq matn ichida
-        if banned_norm and banned_norm in text_norm:
-            logger.info(f"OCR BANNED (text): '{banned}'")
+        if b_norm and b_norm in text_norm:
+            logger.info(f"OCR BANNED: '{banned}'")
             return True, banned
 
-        # 2. Telefon raqam (faqat raqamlar)
-        if len(banned_digits) >= 7 and banned_digits in text_digits:
+        if len(b_digits) >= 7 and b_digits in text_digits:
             logger.info(f"OCR BANNED (digits): '{banned}'")
             return True, banned
 
-        # 3. URL/domain (harf+raqam)
-        if len(banned_alphnum) >= 4 and banned_alphnum in text_alphnum:
+        if len(b_alphnum) >= 4 and b_alphnum in text_alphnum:
             logger.info(f"OCR BANNED (alphanum): '{banned}'")
             return True, banned
 

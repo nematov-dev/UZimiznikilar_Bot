@@ -45,6 +45,7 @@ async def main():
 
     # Middleware — outer: handler topilmasa ham har qanday xabar uchun ishlaydi
     dp.message.outer_middleware(BotMiddleware())
+    dp.edited_message.outer_middleware(BotMiddleware())  # Tahrirlangan xabarlar ham
 
     # Routerlar — tartib muhim
     dp.include_router(admin_handler.router)       # PM — admin buyruqlari
@@ -53,7 +54,14 @@ async def main():
     dp.include_router(group_moderation.router)    # Avtomatik moderatsiya (oxirida)
 
     logger.info("Polling boshlandi...")
-    await dp.start_polling(bot, allowed_updates=dp.resolve_used_update_types())
+    await dp.start_polling(
+        bot,
+        # Bot o'chib yonganida kutilayotgan xabarlar TEKSHIRILADI
+        drop_pending_updates=False,
+        # Aniq ro'yxat — edited_message ham bor
+        allowed_updates=["message", "edited_message", "callback_query",
+                         "my_chat_member", "chat_member"],
+    )
 
 
 if __name__ == "__main__":

@@ -218,25 +218,26 @@ async def _delete_all_and_restrict(bot: Bot, message: Message, reason: str):
     await _sweep_db()
     logger.info(f"DELETED {deleted} messages ({reason}): user={user_id} chat={chat_id}")
 
-    # 4. Restrict qilish
+    # 4. Guruhdan BAN qilish
     try:
-        await bot.restrict_chat_member(
-            chat_id=chat_id,
-            user_id=user_id,
-            permissions=ChatPermissions(
-                can_send_messages=False,
-                can_send_media_messages=False,
-                can_send_other_messages=False,
-                can_add_web_page_previews=False,
-            ),
-        )
-        logger.info(f"RESTRICTED forever ({reason}): user={user_id} chat={chat_id}")
+        await bot.ban_chat_member(chat_id=chat_id, user_id=user_id)
+        logger.info(f"BANNED ({reason}): user={user_id} chat={chat_id}")
     except Exception as e:
-        logger.warning(f"restrict xato: {e}")
+        logger.warning(f"ban xato: {e}")
 
     # 5. Ikkinchi sweep — 3 soniyadan keyin (album rasmlarini ushlash)
     #    Background task sifatida — handler ni bloklamaydi
-    asyncio.create_task(_sweep_db(extra_delay=3.0))
+    async def _sweep_and_cleanup():
+        await _sweep_db(extra_delay=3.0)
+        # 6. DB loglarni tozalash — musor to'planmasin
+        try:
+            cleaned = await queries.delete_user_messages_log(chat_id, user_id)
+            if cleaned:
+                logger.info(f"DB CLEANUP: {cleaned} log o'chirildi user={user_id} chat={chat_id}")
+        except Exception as e:
+            logger.warning(f"DB cleanup xato: {e}")
+
+    asyncio.create_task(_sweep_and_cleanup())
 
 
 # ── Asosiy moderatsiya ────────────────────────────────────────
