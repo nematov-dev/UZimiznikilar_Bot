@@ -69,16 +69,16 @@ async def get_ocr_banned() -> list[str]:
 def _preprocess(img):
     """
     Rasm o'lchamini va kontrastini standartlashtiradi.
-    Kenglikni doimiy 1000px ga keltirish Tesseract uchun matn hajmini ideal qiladi.
+    Kenglikni doimiy 800px ga keltirish Tesseract uchun tezlik va aniqlik muvozanatini beradi.
     """
     from PIL import Image, ImageEnhance
 
     # 1. Grayscale (kulrang rejim)
     img = img.convert("L")
 
-    # 2. O'lchamni standartlashtirish (kenglik doim 1000px, proporsiya saqlanadi)
+    # 2. O'lchamni standartlashtirish (kenglik doim 800px, proporsiya saqlanadi)
     w, h = img.size
-    target_w = 1000
+    target_w = 800
     scale = target_w / w
     target_h = int(h * scale)
     img = img.resize((target_w, target_h), Image.LANCZOS)
@@ -97,8 +97,8 @@ def _preprocess(img):
 def _extract_text_sync(image_bytes: bytes) -> str:
     """
     Rasmdan matn o'qish.
-    --dpi 300: Tesseract resolution xatosini oldini oladi.
-    timeout: jarayonni o'ldiradi (zombie bo'lmaydi).
+    lang='uzb+rus': uzb va rus tillari yetarli (eng tili uzb lotin harflari bilan qoplanadi).
+    --psm 6: Yagona matn bloki sifatida o'qiydi (eng tez va barqaror rejim).
     """
     try:
         import pytesseract
@@ -107,12 +107,11 @@ def _extract_text_sync(image_bytes: bytes) -> str:
         img = Image.open(BytesIO(image_bytes)).convert("RGB")
         img = _preprocess(img)
 
-        # --dpi 300: "Estimating resolution" xatosini bartaraf etadi
-        # --psm 3: Auto page segmentation (universal rejim)
+        # --psm 6: Yagona blok (reklama bannerlari uchun eng mos va tezkor rejim)
         text = pytesseract.image_to_string(
             img,
-            lang="uzb+rus+eng",
-            config="--oem 3 --psm 3 --dpi 300",
+            lang="uzb+rus",
+            config="--oem 3 --psm 6 --dpi 300",
             timeout=_TESSERACT_TIMEOUT,
         )
         return text.strip()
@@ -125,7 +124,7 @@ def _extract_text_sync(image_bytes: bytes) -> str:
             return ""
         # Tesseract stderr warning (masalan "Estimating resolution")
         # — bu xato emas, matn bor bo'lishi mumkin
-        logger.debug(f"OCR runtime: {err_str[:100]}")
+        logger.debug(f"OCR runtime error/warning: {err_str[:100]}")
         return ""
     except Exception as e:
         logger.debug(f"OCR xato: {e}")
