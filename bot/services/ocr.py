@@ -67,12 +67,12 @@ async def get_ocr_banned() -> list[str]:
 # ── Preprocessing (yengil) ────────────────────────────────────
 
 def _preprocess(img):
-    """Grayscale + kontrast. Rasmni 600px ga kichraytirish — tez OCR."""
+    """Grayscale + kontrast + DPI belgilash — OCR aniqligini oshiradi."""
     from PIL import Image, ImageEnhance
 
     img = img.convert("L")
 
-    # KICHRAYTIRISH — 600px max (tez OCR, kam CPU)
+    # Kichraytirish — 600px max
     w, h = img.size
     max_side = 600
     if w > max_side or h > max_side:
@@ -80,13 +80,17 @@ def _preprocess(img):
         img = img.resize((int(w * ratio), int(h * ratio)), Image.LANCZOS)
 
     img = ImageEnhance.Contrast(img).enhance(1.8)
+
+    # DPI belgilash — "Estimating resolution" xatosi oldini oladi
+    img.info["dpi"] = (300, 300)
     return img
 
 
 def _extract_text_sync(image_bytes: bytes) -> str:
     """
     Rasmdan matn o'qish.
-    pytesseract.timeout — tesseract jarayonini o'ldiradi (zombie bo'lmaydi).
+    --dpi 300: Tesseract resolution xatosini oldini oladi.
+    timeout: jarayonni o'ldiradi (zombie bo'lmaydi).
     """
     try:
         import pytesseract
@@ -95,18 +99,24 @@ def _extract_text_sync(image_bytes: bytes) -> str:
         img = Image.open(BytesIO(image_bytes)).convert("RGB")
         img = _preprocess(img)
 
-        # timeout parametri — JARAYONNI O'LDIRADI
+        # --dpi 300: "Estimating resolution" xatosini bartaraf etadi
         text = pytesseract.image_to_string(
             img,
             lang="uzb+rus+eng",
-            config="--oem 3 --psm 11",
+            config="--oem 3 --psm 11 --dpi 300",
             timeout=_TESSERACT_TIMEOUT,
         )
         return text.strip()
 
     except RuntimeError as e:
-        # pytesseract timeout xatosi
-        logger.warning(f"OCR timeout ({_TESSERACT_TIMEOUT}s): {e}")
+        err_str = str(e)
+        # pytesseract timeout
+        if "timeout" in err_str.lower():
+            logger.warning(f"OCR timeout ({_TESSERACT_TIMEOUT}s)")
+            return ""
+        # Tesseract stderr warning (masalan "Estimating resolution")
+        # — bu xato emas, matn bor bo'lishi mumkin
+        logger.debug(f"OCR runtime: {err_str[:100]}")
         return ""
     except Exception as e:
         logger.debug(f"OCR xato: {e}")

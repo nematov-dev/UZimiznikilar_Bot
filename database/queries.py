@@ -163,12 +163,16 @@ async def get_banned_words_list() -> List[str]:
 async def log_message(group_id: int, user_id: int, message_id: int,
                        message_type: str = "text") -> int:
     pool = await get_pool()
-    row = await pool.fetchrow("""
-        INSERT INTO messages (group_id, user_id, message_id, message_type)
-        VALUES ($1, $2, $3, $4)
-        RETURNING id
-    """, group_id, user_id, message_id, message_type)
-    return row["id"]
+    try:
+        row = await pool.fetchrow("""
+            INSERT INTO messages (group_id, user_id, message_id, message_type)
+            VALUES ($1, $2, $3, $4)
+            RETURNING id
+        """, group_id, user_id, message_id, message_type)
+        return row["id"] if row else 0
+    except Exception:
+        # Duplicate yoki boshqa xato — o'tkazib yuboramiz
+        return 0
 
 
 async def get_user_message_ids(group_id: int, user_id: int) -> list[int]:
