@@ -72,9 +72,9 @@ def _preprocess(img):
 
     img = img.convert("L")
 
-    # Kichraytirish — 600px max
+    # Kichraytirish — 1000px max (kichik yozuvlarni yaxshi o'qish uchun)
     w, h = img.size
-    max_side = 600
+    max_side = 1000
     if w > max_side or h > max_side:
         ratio = max_side / max(w, h)
         img = img.resize((int(w * ratio), int(h * ratio)), Image.LANCZOS)
@@ -100,10 +100,11 @@ def _extract_text_sync(image_bytes: bytes) -> str:
         img = _preprocess(img)
 
         # --dpi 300: "Estimating resolution" xatosini bartaraf etadi
+        # --psm 3: Auto page segmentation (universal rejim)
         text = pytesseract.image_to_string(
             img,
             lang="uzb+rus+eng",
-            config="--oem 3 --psm 11 --dpi 300",
+            config="--oem 3 --psm 3 --dpi 300",
             timeout=_TESSERACT_TIMEOUT,
         )
         return text.strip()
