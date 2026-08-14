@@ -13,9 +13,9 @@ import json
 from io import BytesIO
 from loguru import logger
 
-PHASH_THRESHOLD = 8        # Butun rasm uchun Hamming masofasi (0=aynan bir xil, 8=juda o'xshash)
-SEGMENT_THRESHOLD = 6      # Segment uchun — har bir bo'lak
-MIN_SEGMENT_MATCHES = 5    # Kamida shu qancha segment mos kelsa → topilgan (16 tadan)
+PHASH_THRESHOLD = 11       # Butun rasm uchun Hamming masofasi (0-11: juda o'xshash)
+SEGMENT_THRESHOLD = 7      # Segment uchun Hamming masofasi
+MIN_SEGMENT_MATCHES = 4    # Kamida shu qancha segment mos kelsa → topilgan (16 tadan)
 
 
 def _check_imagehash() -> bool:

@@ -406,8 +406,8 @@ async def _download_photo(message: Message, bot: Bot) -> bytes | None:
 
 # ── Taqiqlangan rasm tekshiruvi (pHash + segment) ────────────
 
-_LOCAL_SEGMENT_THRESHOLD = 6   # Har bir segment uchun max masofa
-_LOCAL_MIN_SEGMENT_MATCHES = 5  # 16 segmentdan 5 tasi mos kelsa → topilgan
+_LOCAL_SEGMENT_THRESHOLD = 7   # Har bir segment uchun max masofa
+_LOCAL_MIN_SEGMENT_MATCHES = 4  # 16 segmentdan 4 tasi mos kelsa → topilgan
 
 
 async def _check_banned_image_bytes(image_bytes: bytes, message: Message) -> bool:
