@@ -67,21 +67,29 @@ async def get_ocr_banned() -> list[str]:
 # ── Preprocessing (yengil) ────────────────────────────────────
 
 def _preprocess(img):
-    """Grayscale + kontrast + DPI belgilash — OCR aniqligini oshiradi."""
+    """
+    Rasm o'lchamini va kontrastini standartlashtiradi.
+    Kenglikni doimiy 1000px ga keltirish Tesseract uchun matn hajmini ideal qiladi.
+    """
     from PIL import Image, ImageEnhance
 
+    # 1. Grayscale (kulrang rejim)
     img = img.convert("L")
 
-    # Kichraytirish — 1000px max (kichik yozuvlarni yaxshi o'qish uchun)
+    # 2. O'lchamni standartlashtirish (kenglik doim 1000px, proporsiya saqlanadi)
     w, h = img.size
-    max_side = 1000
-    if w > max_side or h > max_side:
-        ratio = max_side / max(w, h)
-        img = img.resize((int(w * ratio), int(h * ratio)), Image.LANCZOS)
+    target_w = 1000
+    scale = target_w / w
+    target_h = int(h * scale)
+    img = img.resize((target_w, target_h), Image.LANCZOS)
 
-    img = ImageEnhance.Contrast(img).enhance(1.8)
+    # 3. Kontrastni oshirish (matn aniqroq ko'rinishi uchun)
+    img = ImageEnhance.Contrast(img).enhance(2.0)
+    
+    # 4. Ravshanlikni oshirish (shading kamayadi)
+    img = ImageEnhance.Sharpness(img).enhance(1.5)
 
-    # DPI belgilash — "Estimating resolution" xatosi oldini oladi
+    # DPI belgilash (tesseract uchun)
     img.info["dpi"] = (300, 300)
     return img
 
