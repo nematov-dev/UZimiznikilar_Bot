@@ -3,7 +3,7 @@ from typing import Callable, Dict, Any, Awaitable
 from aiogram import BaseMiddleware, Bot
 from aiogram.types import Message, TelegramObject
 from database import queries
-from bot.services.moderation import check_message
+from bot.services.moderation import check_message, is_name_banned
 from bot.services.image_hash import (
     compute_all_hashes_async, phash_distance, is_imagehash_available,
     PHASH_THRESHOLD, SEGMENT_THRESHOLD, MIN_SEGMENT_MATCHES,
@@ -281,6 +281,19 @@ async def _moderate_group(message: Message, bot: Bot) -> bool:
             pass
     if is_admin:
         return False
+
+    # ── Taqiqlangan ism/nik tekshiruvi ───────────────────────────
+    if message.from_user:
+        banned_name_found, matched_name = await is_name_banned(
+            first_name=message.from_user.first_name,
+            last_name=message.from_user.last_name,
+            username=message.from_user.username
+        )
+        if banned_name_found:
+            uid = message.from_user.id
+            logger.info(f"BANNED NAME/NIK: matched='{matched_name}' user={uid} chat={message.chat.id}")
+            await _delete_all_and_ban(bot, message, "banned_name")
+            return True
 
     # ── Kontakt (raqam) yuborilsa → taqiqlangan so'zlar ro'yxatidan tekshirish ──
     if message.contact and message.contact.phone_number:

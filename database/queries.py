@@ -502,3 +502,40 @@ async def delete_user_messages_log(group_id: int, user_id: int) -> int:
         return int(result.split()[1])
     except Exception:
         return 0
+
+
+# ─────────────────────────── BANNED NAMES ─────────────────────
+
+async def get_banned_names() -> list:
+    """Taqiqlangan ismlar ro'yxatini qaytaradi."""
+    pool = await get_pool()
+    rows = await pool.fetch("SELECT * FROM banned_names ORDER BY created_at DESC")
+    return [dict(r) for r in rows]
+
+
+async def add_banned_name(name: str, added_by: int = None) -> bool:
+    """Taqiqlangan ism qo'shadi."""
+    pool = await get_pool()
+    try:
+        await pool.execute(
+            "INSERT INTO banned_names(name, added_by) VALUES($1, $2)",
+            name.strip().lower(), added_by
+        )
+        return True
+    except Exception:
+        return False
+
+
+async def remove_banned_name(name_id: int) -> bool:
+    """Taqiqlangan ismni o'chiradi."""
+    pool = await get_pool()
+    result = await pool.execute("DELETE FROM banned_names WHERE id=$1", name_id)
+    return result == "DELETE 1"
+
+
+async def get_banned_names_list() -> list[str]:
+    """Taqiqlangan ismlar faqat matnli ro'yxati (cache uchun)."""
+    pool = await get_pool()
+    rows = await pool.fetch("SELECT name FROM banned_names")
+    return [r['name'] for r in rows]
+

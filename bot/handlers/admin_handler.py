@@ -49,6 +49,10 @@ class OcrTextState(StatesGroup):
     add = State()
     delete = State()
 
+class BannedNameState(StatesGroup):
+    add = State()
+    delete = State()
+
 
 # ── Klaviaturalar ─────────────────────────────────────────────
 
@@ -57,13 +61,23 @@ def admin_menu() -> ReplyKeyboardMarkup:
     b.row(KeyboardButton(text="📊 Statistika"), KeyboardButton(text="🚫 Taqiqlangan so'zlar"))
     b.row(KeyboardButton(text="🏘️ Guruhlar"), KeyboardButton(text="📢 Xabar yuborish"))
     b.row(KeyboardButton(text="📅 Rejalashtirilgan xabarlar"), KeyboardButton(text="🖼 Taqiqlangan rasmlar"))
-    b.row(KeyboardButton(text="📝 Rasm matni (OCR)"), KeyboardButton(text="👤 Adminlar boshqaruvi"))
+    b.row(KeyboardButton(text="📝 Rasm matni (OCR)"), KeyboardButton(text="👤 Taqiqlangan Niklar"))
+    b.row(KeyboardButton(text="👤 Adminlar boshqaruvi"))
     return b.as_markup(resize_keyboard=True)
 
 def cancel_kb() -> ReplyKeyboardMarkup:
     b = ReplyKeyboardBuilder()
     b.add(KeyboardButton(text="❌ Bekor"))
     return b.as_markup(resize_keyboard=True)
+
+def bn_menu_kb() -> InlineKeyboardMarkup:
+    b = InlineKeyboardBuilder()
+    b.row(
+        InlineKeyboardButton(text="➕ Nik qo'shish", callback_data="bn_add"),
+        InlineKeyboardButton(text="🗑 Nik o'chirish", callback_data="bn_del"),
+    )
+    b.row(InlineKeyboardButton(text="🔄 Yangilash", callback_data="bn_refresh"))
+    return b.as_markup()
 
 def bw_menu_kb() -> InlineKeyboardMarkup:
     b = InlineKeyboardBuilder()
@@ -971,6 +985,169 @@ async def ocr_del_confirm(cb: CallbackQuery):
 
 @router.callback_query(F.data == "ocrdel_cancel")
 async def ocr_del_cancel(cb: CallbackQuery):
+    await cb.message.edit_text("Bekor qilindi.")
+    await cb.answer()
+
+
+# ── 👤 Taqiqlangan Niklar ─────────────────────────────────────
+
+def _bn_menu_kb() -> InlineKeyboardMarkup:
+    b = InlineKeyboardBuilder()
+    b.row(
+        InlineKeyboardButton(text="➕ Qo'shish", callback_data="bn_add"),
+        InlineKeyboardButton(text="🗑 O'chirish", callback_data="bn_del"),
+    )
+    b.row(InlineKeyboardButton(text="🔄 Yangilash", callback_data="bn_refresh"))
+    return b.as_markup()
+
+
+def _bn_list_text(items: list) -> str:
+    count = len(items)
+    text = f"👤 <b>Taqiqlangan ism/niklar</b> ({count} ta)\n\n"
+    text += "ℹ️ Foydalanuvchi ismida (First/Last name) yoki username'ida shu matn bo'lsa — bot darhol guruhdan ban qiladi va barcha xabarlarini o'chiradi.\n\n"
+    text += "ℹ️ <i>Eslatma: agar <code>@spammer</code> ko'rinishida yozsangiz - faqat username aniq mos kelganda ban qiladi. Agar <code>spammer</code> deb yozsangiz, ismida yoki username'ida 'spammer' so'zi qatnashgan hammani ban qiladi.</i>\n\n"
+    if items:
+        for i, row in enumerate(items[:50], 1):
+            text += f"{i}. <code>{row['name']}</code>\n"
+        if count > 50:
+            text += f"... va yana {count - 50} ta"
+    else:
+        text += "Ro'yxat bo'sh.\n\nQo'shish uchun ➕ Qo'shish tugmasini bosing."
+    return text
+
+
+@router.message(F.text == "👤 Taqiqlangan Niklar")
+async def bn_menu(message: Message, state: FSMContext):
+    if not await is_bot_admin(message.from_user.id):
+        return
+    await state.clear()
+    items = await queries.get_banned_names()
+    await message.answer(
+        _bn_list_text(items), parse_mode="HTML", reply_markup=_bn_menu_kb()
+    )
+
+
+@router.callback_query(F.data == "bn_refresh")
+async def bn_refresh(cb: CallbackQuery):
+    if not await is_bot_admin(cb.from_user.id):
+        return await cb.answer("Ruxsat yo'q")
+    from bot.services.moderation import refresh_banned_names_cache
+    await refresh_banned_names_cache()
+    items = await queries.get_banned_names()
+    await cb.message.edit_text(
+        _bn_list_text(items), parse_mode="HTML", reply_markup=_bn_menu_kb()
+    )
+    await cb.answer("Yangilandi")
+
+
+@router.callback_query(F.data == "bn_add")
+async def bn_add_start(cb: CallbackQuery, state: FSMContext):
+    if not await is_bot_admin(cb.from_user.id):
+        return await cb.answer("Ruxsat yo'q")
+    await state.set_state(BannedNameState.add)
+    await cb.message.answer(
+        "👤 <b>Taqiqlangan ism/nik qo'shish</b>\n\n"
+        "Misol:\n"
+        "1. <code>@spammer_bot</code> (faqat username mos kelganda ban qiladi)\n"
+        "2. <code>trading</code> (ismida yoki username'ida shu so'z qatnashgan hammani ban qiladi)\n\n"
+        "Har birini yangi qatorda yozing.",
+        parse_mode="HTML",
+        reply_markup=cancel_kb()
+    )
+    await cb.answer()
+
+
+@router.message(BannedNameState.add)
+async def bn_add_receive(message: Message, state: FSMContext):
+    if message.text == "❌ Bekor":
+        await state.clear()
+        return await message.answer("Bekor qilindi.", reply_markup=admin_menu())
+
+    lines = [ln.strip().lower() for ln in message.text.splitlines() if ln.strip()]
+    added, skipped = [], []
+    for ln in lines:
+        ok = await queries.add_banned_name(ln, message.from_user.id)
+        (added if ok else skipped).append(ln)
+
+    if added:
+        from bot.services.moderation import refresh_banned_names_cache
+        await refresh_banned_names_cache()
+
+    await state.clear()
+    parts = []
+    if added:
+        parts.append("✅ Qo'shildi:\n" + "\n".join(f"• <code>{t}</code>" for t in added))
+    if skipped:
+        parts.append("⚠️ Allaqachon bor:\n" + "\n".join(f"• <code>{t}</code>" for t in skipped))
+    await message.answer(
+        "\n\n".join(parts) or "Hech narsa qo'shilmadi.",
+        parse_mode="HTML", reply_markup=admin_menu()
+    )
+    items = await queries.get_banned_names()
+    await message.answer(_bn_list_text(items), parse_mode="HTML", reply_markup=_bn_menu_kb())
+
+
+@router.callback_query(F.data == "bn_del")
+async def bn_del_start(cb: CallbackQuery, state: FSMContext):
+    if not await is_bot_admin(cb.from_user.id):
+        return await cb.answer("Ruxsat yo'q")
+    await state.set_state(BannedNameState.delete)
+    await cb.message.answer(
+        "O'chirmoqchi bo'lgan nik/ismni yozing — bot topib ko'rsatadi:",
+        reply_markup=cancel_kb()
+    )
+    await cb.answer()
+
+
+@router.message(BannedNameState.delete)
+async def bn_del_search(message: Message, state: FSMContext):
+    if message.text == "❌ Bekor":
+        await state.clear()
+        return await message.answer("Bekor.", reply_markup=admin_menu())
+
+    q = message.text.strip().lower()
+    items = await queries.get_banned_names()
+    found = [row for row in items if q in row["name"]]
+
+    if not found:
+        return await message.answer(
+            f"❌ <b>«{q}»</b> topilmadi. Qayta yozing.", parse_mode="HTML"
+        )
+
+    await state.clear()
+    b = InlineKeyboardBuilder()
+    text = f"🔍 «{q}» bo'yicha topildi:\n\n"
+    for row in found[:10]:
+        text += f"• <code>{row['name']}</code>\n"
+        b.row(InlineKeyboardButton(
+            text=f"🗑 {row['name'][:30]}",
+            callback_data=f"bndel:{row['id']}"
+        ))
+    b.row(InlineKeyboardButton(text="❌ Bekor", callback_data="bndel_cancel"))
+    await message.answer(text, parse_mode="HTML", reply_markup=b.as_markup())
+
+
+@router.callback_query(F.data.startswith("bndel:"))
+async def bn_del_confirm(cb: CallbackQuery):
+    if not await is_bot_admin(cb.from_user.id):
+        return await cb.answer("Ruxsat yo'q")
+    item_id = int(cb.data.split(":")[1])
+    ok = await queries.remove_banned_name(item_id)
+    if ok:
+        from bot.services.moderation import refresh_banned_names_cache
+        await refresh_banned_names_cache()
+        await cb.message.edit_text("✅ O'chirildi.")
+    else:
+        await cb.message.edit_text("❌ Topilmadi.")
+    items = await queries.get_banned_names()
+    await cb.message.answer(
+        _bn_list_text(items), parse_mode="HTML", reply_markup=_bn_menu_kb()
+    )
+    await cb.answer()
+
+
+@router.callback_query(F.data == "bndel_cancel")
+async def bn_del_cancel(cb: CallbackQuery):
     await cb.message.edit_text("Bekor qilindi.")
     await cb.answer()
 

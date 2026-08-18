@@ -24,6 +24,9 @@ USERNAME_PATTERN = re.compile(r"@[A-Za-z][A-Za-z0-9_]{3,31}")
 _cache: List[str] = []
 _cache_loaded: bool = False
 
+_banned_names_cache: List[str] = []
+_banned_names_loaded: bool = False
+
 
 async def refresh_banned_words_cache():
     global _cache, _cache_loaded
@@ -32,6 +35,45 @@ async def refresh_banned_words_cache():
         _cache_loaded = True
     except Exception:
         pass
+
+
+async def refresh_banned_names_cache():
+    global _banned_names_cache, _banned_names_loaded
+    try:
+        _banned_names_cache = await queries.get_banned_names_list()
+        _banned_names_loaded = True
+    except Exception:
+        pass
+
+
+async def is_name_banned(first_name: str | None, last_name: str | None, username: str | None) -> tuple[bool, str]:
+    """
+    Foydalanuvchining ismi, familiyasi yoki username'i taqiqlangan niklar ro'yxatida borligini tekshiradi.
+    @ bilan yozilgan bo'lsa - username'i aniq mos kelishi kerak.
+    @ bo'lmasa - substring (ism ichida qatnashishi) tekshiriladi.
+    """
+    global _banned_names_loaded
+    if not _banned_names_loaded:
+        await refresh_banned_names_cache()
+
+    first = (first_name or "").lower()
+    last = (last_name or "").lower()
+    uname = (username or "").lower()
+
+    for banned in _banned_names_cache:
+        banned_clean = banned.strip().lower()
+        if not banned_clean:
+            continue
+        
+        if banned_clean.startswith('@'):
+            clean_banned_uname = banned_clean[1:]
+            if uname == clean_banned_uname:
+                return True, banned
+        else:
+            if banned_clean in first or banned_clean in last or banned_clean in uname:
+                return True, banned
+
+    return False, ""
 
 
 def contains_link(text: str) -> bool:
