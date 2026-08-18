@@ -49,8 +49,8 @@ async def refresh_banned_names_cache():
 async def is_name_banned(first_name: str | None, last_name: str | None, username: str | None) -> tuple[bool, str]:
     """
     Foydalanuvchining ismi, familiyasi yoki username'i taqiqlangan niklar ro'yxatida borligini tekshiradi.
-    @ bilan yozilgan bo'lsa - username'i aniq mos kelishi kerak.
-    @ bo'lmasa - substring (ism ichida qatnashishi) tekshiriladi.
+    @ bilan yozilgan bo'lsa - faqat username'i aniq mos kelishi tekshiriladi.
+    @ bo'lmasa - faqat ism va familiyasi (first_name, last_name) ichida qatnashishi tekshiriladi (username tekshirilmaydi).
     """
     global _banned_names_loaded
     if not _banned_names_loaded:
@@ -66,11 +66,13 @@ async def is_name_banned(first_name: str | None, last_name: str | None, username
             continue
         
         if banned_clean.startswith('@'):
+            # @ bilan yozilgan bo'lsa -> faqat username aniq mos kelishi tekshiriladi
             clean_banned_uname = banned_clean[1:]
             if uname == clean_banned_uname:
                 return True, banned
         else:
-            if banned_clean in first or banned_clean in last or banned_clean in uname:
+            # @ bo'lmasa -> faqat display name (ism va familiya) tekshiriladi, username ARALASHTIRILMAYDI
+            if banned_clean in first or banned_clean in last:
                 return True, banned
 
     return False, ""
